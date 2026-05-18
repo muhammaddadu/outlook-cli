@@ -38,19 +38,36 @@ outlook list --folder Sent --since 7d          # sent in the last week
 outlook search "deploy" --has-attachments      # full-text + filter
 ```
 
-In any Claude Code session you can now either:
+`outlook setup --with-skill` auto-detects every AI agent on your machine
+and installs the skill into all of them:
 
-- **Ask in plain English** — the skill auto-loads when relevant:
+| Agent | Skill location | Slash commands |
+| --- | --- | --- |
+| Claude Code | `~/.claude/skills/outlook/SKILL.md` | `~/.claude/commands/*.md` |
+| Codex CLI | `~/.codex/skills/outlook/SKILL.md` | `~/.codex/prompts/*.md` |
+| Cursor | `~/.cursor/rules/outlook.md` | (Cursor uses rules, not slash commands) |
+
+In any agent session you can then either:
+
+- **Ask in plain English** — the skill auto-loads when intent matches:
   *"Check my unread mail"*, *"Find emails from Alice this week"*,
   *"Send a reply to the message from Bob"*.
-- **Use slash commands** for quick invocation:
+- **Use slash commands** (Claude Code and Codex CLI only):
   - `/outlook <request>` — generic Outlook task
   - `/inbox` — summarise the inbox
   - `/unread` — triage unread mail
 
-> If Claude Code was already running when you installed, **restart it** so
-> the new skill and commands get picked up. Skills are loaded at session
-> start, not on the fly.
+> **Restart your agent CLI** after installing — skills and commands are
+> loaded at session start, not on the fly.
+
+To target only specific agents:
+
+```bash
+node skill/install.mjs --target claude              # just Claude Code
+node skill/install.mjs --target claude,codex        # Claude + Codex
+node skill/install.mjs --target all                 # all three regardless of detection
+node skill/install.mjs --uninstall                  # remove from everywhere
+```
 
 ### From source (for development)
 

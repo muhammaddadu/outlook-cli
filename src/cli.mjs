@@ -135,9 +135,8 @@ program
     'Download Chromium (needed for the first sign-in) and optionally\n' +
       'install the agent skill for Claude Code / Codex / Cursor.',
   )
-  .option('--with-skill', 'also install the agent skill (recommended)')
-  .option('--skill-target <name>', 'skill target: claude | codex | cursor', 'claude')
-  .option('--skill-scope <scope>', 'claude scope: user | project', 'user')
+  .option('--with-skill', 'also install the agent skill into every detected AI agent (Claude/Codex/Cursor)')
+  .option('--skill-target <list>', 'comma-separated targets, or "all" / "auto"', 'auto')
   .option('--skip-browser', 'do not download Chromium (you must run `npx playwright install chromium` later)')
   .action(async (opts) => {
     if (!opts.skipBrowser) {
@@ -145,14 +144,12 @@ program
       await runChildToCompletion('npx', ['playwright', 'install', 'chromium']);
     }
     if (opts.withSkill) {
-      info(`Installing skill (target=${opts.skillTarget}, scope=${opts.skillScope})…`);
+      info('Installing skill + slash commands into detected AI agents…');
       const installerPath = resolve(HERE, '..', 'skill', 'install.mjs');
       await runChildToCompletion(process.execPath, [
         installerPath,
         '--target',
         opts.skillTarget,
-        '--scope',
-        opts.skillScope,
       ]);
     }
     info('');
