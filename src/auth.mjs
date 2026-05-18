@@ -14,6 +14,7 @@ import {
 import { dirname } from 'node:path';
 import { tokenCacheFile } from './paths.mjs';
 import { debug } from './output.mjs';
+import { decodePayload } from './jwt.mjs';
 
 // Lazy import — capture.mjs pulls in Playwright (≈80MB of resident memory
 // and a Chromium executable check). Cache-hit calls never hit this code
@@ -26,17 +27,8 @@ async function captureAuth(opts) {
 const MIN_LIFETIME_MS = 5 * 60 * 1000;
 
 function decodeJwtExp(bearer) {
-  const jwt = bearer.replace(/^Bearer\s+/i, '');
-  const parts = jwt.split('.');
-  if (parts.length < 2) return null;
-  const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-  const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
-  try {
-    const payload = JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
-    return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
-  } catch {
-    return null;
-  }
+  const payload = decodePayload(bearer);
+  return typeof payload?.exp === 'number' ? payload.exp * 1000 : null;
 }
 
 export function loadCachedAuth() {

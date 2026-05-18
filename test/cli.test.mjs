@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-import { runCli, seedTokenCache, startMockServer } from './helpers.mjs';
+import { runCli, seedTokenCache, startMockServer, freshLearningsPath } from './helpers.mjs';
 
 // ---------------------------------------------------------------------------
 // Smoke tests — no auth or network involved
@@ -684,6 +684,101 @@ test('draft-reply with malformed override JSON exits 64', async () => {
   } finally {
     await mock.close();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Self-learning context
+
+test('context with no cached auth returns null user and empty learnings', async () => {
+  const learnings = freshLearningsPath();
+  const { code, stdout } = await runCli(['context'], {
+    env: {
+      OUTLOOK_TOKEN_CACHE: '/nonexistent/auth.json',
+      OUTLOOK_LEARNINGS: learnings,
+    },
+  });
+  assert.equal(code, 0);
+  const out = JSON.parse(stdout);
+  assert.equal(out.user, null);
+  assert.deepEqual(out.learnings, []);
+  assert.equal(out.learningsFile, learnings);
+});
+
+test('context decodes user info from the cached JWT claims', async () => {
+  const cache = seedTokenCache({
+    claims: {
+      upn: 'alice@example.com',
+      name: 'Alice Example',
+      tid: 'tenant-uuid',
+    },
+  });
+  const { code, stdout } = await runCli(['context'], {
+    env: { OUTLOOK_TOKEN_CACHE: cache, OUTLOOK_LEARNINGS: freshLearningsPath() },
+  });
+  assert.equal(code, 0);
+  const out = JSON.parse(stdout);
+  assert.deepEqual(out.user, {
+    email: 'alice@example.com',
+    name: 'Alice Example',
+    tenant_id: 'tenant-uuid',
+  });
+  assert.ok(out.tokenMinutesUntilExpiry > 0);
+});
+
+test('learn add records an observation that learn (list) reads back', async () => {
+  const learnings = freshLearningsPath();
+  const env = { OUTLOOK_LEARNINGS: learnings };
+
+  const add = await runCli(['learn', 'add', 'Signs off as Mo'], { env });
+  assert.equal(add.code, 0);
+  assert.equal(JSON.parse(add.stdout).added, true);
+
+  const list = await runCli(['learn'], { env });
+  assert.equal(list.code, 0);
+  const out = JSON.parse(list.stdout);
+  assert.equal(out.count, 1);
+  assert.match(out.learnings[0], /Signs off as Mo$/);
+});
+
+test('learn forget removes matching learnings', async () => {
+  const learnings = freshLearningsPath();
+  const env = { OUTLOOK_LEARNINGS: learnings };
+  await runCli(['learn', 'add', 'Signs off as Mo'], { env });
+  await runCli(['learn', 'add', 'Prefers terse replies'], { env });
+  await runCli(['learn', 'add', 'Boss is alice@example.com'], { env });
+
+  const forget = await runCli(['learn', 'forget', 'alice'], { env });
+  assert.equal(forget.code, 0);
+  assert.equal(JSON.parse(forget.stdout).removed, 1);
+
+  const list = await runCli(['learn'], { env });
+  const out = JSON.parse(list.stdout);
+  assert.equal(out.count, 2);
+});
+
+test('learn clear wipes everything', async () => {
+  const learnings = freshLearningsPath();
+  const env = { OUTLOOK_LEARNINGS: learnings };
+  await runCli(['learn', 'add', 'x'], { env });
+  await runCli(['learn', 'add', 'y'], { env });
+
+  const clear = await runCli(['learn', 'clear'], { env });
+  assert.equal(clear.code, 0);
+  assert.equal(JSON.parse(clear.stdout).cleared, true);
+
+  const list = await runCli(['learn'], { env });
+  assert.equal(JSON.parse(list.stdout).count, 0);
+});
+
+test('learn add deduplicates near-identical observations', async () => {
+  const learnings = freshLearningsPath();
+  const env = { OUTLOOK_LEARNINGS: learnings };
+  const first = await runCli(['learn', 'add', 'Likes coffee'], { env });
+  assert.equal(JSON.parse(first.stdout).added, true);
+  const second = await runCli(['learn', 'add', 'Likes coffee'], { env });
+  assert.equal(JSON.parse(second.stdout).added, false);
+  const list = await runCli(['learn'], { env });
+  assert.equal(JSON.parse(list.stdout).count, 1);
 });
 
 test('logout removes the cache file and exits 0', async () => {

@@ -31,6 +31,7 @@ using it on anything you care about.
 | --- | --- |
 | `~/.cache/outlook-spike/auth.json` | Contains a JWT with read+send access to your mailbox. Anyone who reads this file can act as you for ~24h. |
 | `~/.local/share/outlook-spike/browser-profile/` | Contains SSO cookies. Anyone with this directory can sign in as you without MFA. |
+| `~/.local/share/outlook-spike/learnings.md` | Free-form notes the AI agent has accumulated. May contain names, email addresses, project names, and habits. Plain-text markdown; user-editable. |
 
 These are stored with default user-only permissions. **Don't share them.
 Don't sync them to cloud storage. Don't commit them.** The repo `.gitignore`
@@ -90,6 +91,36 @@ unknowingly be skirting:
 | Token cache file leaked (sent in an email, committed by mistake, …) | Sign out of OWA in your browser. The cached Bearer is still valid for up to ~24h regardless — you can't directly revoke a delegated JWT, but signing out invalidates the refresh chain so no new token can be issued. Then `outlook logout` locally. |
 | Browser profile leaked | Change your Microsoft account password. Sign out of all sessions from `https://account.microsoft.com/security`. |
 | You suspect EDR flagged you | Reach out to your security team first, don't try to delete logs. Be honest about what you did. |
+
+## Self-learning behaviour
+
+The CLI maintains a `learnings.md` file the AI agent reads at session
+start (`outlook context`) and appends to (`outlook learn add`). The
+intent is to let your agent improve over time — knowing aliases like
+"the team", your sign-off, your preferred tone, etc.
+
+**Privacy posture:**
+- The file is **local-only**. It's never uploaded, synced, or
+  transmitted. The CLI never reads it during API calls.
+- The user (you) can view, edit, or wipe the file at any time:
+  - `outlook learn` → list all entries
+  - `outlook learn forget "<text>"` → remove matching entries
+  - `outlook learn clear` → wipe entirely
+  - Or just edit the markdown file directly with your favourite editor.
+- The SKILL.md tells the agent: never record sensitive content (financial
+  details, HR context, private contact info) without asking first.
+- The file is plain-text markdown — if a future you (or a colleague
+  reviewing the file) finds an entry uncomfortable, deleting it is
+  one command.
+
+**Recommendations:**
+- Don't sync `~/.local/share/outlook-spike/` to cloud storage if you
+  share your account with others or use the machine for both work and
+  personal contexts.
+- Periodically run `outlook learn` to audit what's been recorded.
+- After job/project changes that touch your inbox patterns, run
+  `outlook learn clear` to reset; the agent will rebuild context based
+  on new behaviour.
 
 ## Open security questions / unfinished work
 

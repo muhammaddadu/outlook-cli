@@ -12,6 +12,54 @@ account to configure — if it's installed, it Just Works.
 If `outlook --version` fails, stop and tell the user the CLI isn't
 installed. Do not attempt to install it autonomously.
 
+## Start every session with `outlook context`
+
+Run `outlook context` **before your first mail-related action** in a
+session. It's free (no network, no Chromium) and returns:
+
+```json
+{
+  "user": { "email": "…", "name": "…", "tenant_id": "…" },
+  "tokenMinutesUntilExpiry": 1408,
+  "learnings": [
+    "2026-05-18 | Signs off as Mo",
+    "2026-05-18 | Prefers terse one-line replies",
+    "2026-05-18 | 'the team' usually means team-eng@example.com"
+  ],
+  "learningsFile": "/Users/…/.local/share/outlook-spike/learnings.md"
+}
+```
+
+Use `user.email` to know whose mailbox you're acting on. Use `learnings`
+to adapt your tone, recipient resolution, and default behaviour to what
+the user has shown they prefer.
+
+## Adapt over time with `outlook learn`
+
+When you observe something durable, non-obvious, and useful about the
+user's mail habits, append it:
+
+```bash
+outlook learn add "Signs off as 'Mo'"
+outlook learn add "Drafts to vendors should be HTML with the legal footer"
+outlook learn add "When user says 'my boss' they mean alice@example.com"
+```
+
+Good learnings have all three properties:
+- **Durable** — true today and likely true next week. Not "the user is
+  in a hurry right now."
+- **Non-obvious** — a fact you couldn't trivially re-derive next time.
+  Skip "user has an inbox."
+- **Useful** — informs how you'd act next time. "User likes pizza" is
+  cute but doesn't change your behaviour.
+
+Don't pollute. A good rule: < 30 entries total. If learnings get noisy,
+suggest the user run `outlook learn forget <substring>` to prune.
+
+**Never record sensitive content without asking** (financial details, HR
+context, anything the user might not want a future agent to see). If in
+doubt, ask: "Want me to remember this for next time?"
+
 ## Quick reference
 
 ```
@@ -35,6 +83,13 @@ outlook send                          # send mail directly (STDIN JSON)
 # Lifecycle
 outlook auth                          # interactive sign-in (USER-driven only)
 outlook logout                        # clear cached token
+
+# Self-learning (call at session start, then append observations)
+outlook context                       # user info + accumulated learnings (no network)
+outlook learn                         # list current learnings
+outlook learn add "<observation>"     # record a durable, useful observation
+outlook learn forget "<substring>"    # remove matching learnings
+outlook learn clear                   # wipe everything
 ```
 
 ## Filters (shared by `list`, `unread`, and `search`)
@@ -202,6 +257,7 @@ clearly. Do not loop trying to re-authenticate.
 - "Did anyone email me about X?" → `outlook search "X"`
 - "What's in my inbox?" → `outlook list -n 10`
 - "Anything unread from <person>?" → `outlook unread --from <addr>`
+- (always) Start with `outlook context` to load identity + learnings
 - "Draft a reply to <message>" → `outlook draft-reply <id> '<json with Body>'`
 - "Send a reply to <message>" → confirm details, then `outlook draft-reply` (preferred) or `outlook send` if user demands direct send
 - "When did <person> last email me?" → `outlook list --from <addr> -n 1`
@@ -230,6 +286,25 @@ clearly. Do not loop trying to re-authenticate.
   send from Outlook.
 - Don't suggest installation or configuration steps. The CLI is either on
   PATH or it isn't.
+
+## Examples of good learnings
+
+Things worth recording with `outlook learn add "…"`:
+
+- "Signs off as 'Mo' (no full name in informal replies)"
+- "Prefers terse 1-2 sentence replies; only goes long for vendor / external"
+- "'The team' = team-eng@example.com (mailing list)"
+- "Boss is alice@example.com — replies to her are usually short and direct"
+- "External vendor replies should be HTML with the standard legal footer"
+- "Always BCC archive@example.com on customer-facing mail"
+- "Don't send mail before 9am or after 7pm without explicit confirmation"
+
+Things NOT worth recording:
+
+- "User checked their inbox today"  (transient, useless next time)
+- "User has 12 unread emails right now"  (will be wrong tomorrow)
+- "User likes pizza"  (true but unrelated to mail)
+- "User is upset"  (transient, sensitive)
 
 ## Verifying the CLI is available
 

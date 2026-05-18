@@ -16,12 +16,20 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
-import { getAuth, saveAuth, clearAuth } from './auth.mjs';
+import { getAuth, saveAuth, clearAuth, loadCachedAuth } from './auth.mjs';
 import { captureAuth } from './capture.mjs';
 import { call } from './client.mjs';
 import { printJson, info, errorBlock, debug } from './output.mjs';
 import { AppError, E, EXIT, exitCodeFor } from './errors.mjs';
 import { buildFilter, buildQuery, resolveFolder } from './odata.mjs';
+import {
+  loadLearnings,
+  addLearning,
+  removeLearning,
+  clearLearnings,
+  learningsFile,
+} from './learn.mjs';
+import { decodePayload } from './jwt.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(resolve(HERE, '..', 'package.json'), 'utf8'));
@@ -197,6 +205,89 @@ program
     const auth = await captureAuth();
     saveAuth(auth);
     info('Token refreshed.');
+  });
+
+// ---------------------------------------------------------------------------
+// Self-learning context. The agent reads `outlook context` at the start of
+// every mail-related interaction and appends durable observations via
+// `outlook learn add "<observation>"`. The file is plain-text markdown the
+// user can read/edit/clear at any time.
+
+program
+  .command('context')
+  .description(
+    'Print the context an AI agent should load at session start:\n' +
+      'user identity (from cached JWT), accumulated learnings, paths to the\n' +
+      'learnings file. Pure read; never makes API calls.',
+  )
+  .action(() => {
+    // Read from cache directly — context must never trigger a Chromium
+    // relaunch (it's called at every agent session start, often before the
+    // user even asks for mail).
+    let user = null;
+    let tokenMinutesUntilExpiry = null;
+    const cached = loadCachedAuth();
+    if (cached) {
+      const claims = decodePayload(cached.headers.authorization);
+      if (claims) {
+        user = {
+          email: claims.upn ?? claims.unique_name ?? null,
+          name: claims.name ?? null,
+          tenant_id: claims.tid ?? null,
+        };
+      }
+      tokenMinutesUntilExpiry = Math.floor(
+        (cached.expiresAt - Date.now()) / 60_000,
+      );
+    }
+
+    printJson({
+      user,
+      tokenMinutesUntilExpiry,
+      learnings: loadLearnings(),
+      learningsFile: learningsFile(),
+    });
+  });
+
+const learn = program
+  .command('learn')
+  .description('Show, add, forget, or clear the agent\'s learnings about the user.\n' +
+    'Examples:\n' +
+    '  outlook learn                                # list all learnings\n' +
+    '  outlook learn add "Signs off as Mo"          # record an observation\n' +
+    '  outlook learn forget "Signs off"             # remove matching entries\n' +
+    '  outlook learn clear                          # wipe the file');
+
+learn
+  .command('add <text>')
+  .description('Record a new observation.')
+  .action((text) => {
+    const added = addLearning(text);
+    printJson({ added, text: text.trim(), file: learningsFile() });
+  });
+
+learn
+  .command('forget <substring>')
+  .description('Remove every learning containing the substring (case-insensitive).')
+  .action((substring) => {
+    const removed = removeLearning(substring);
+    printJson({ removed, substring });
+  });
+
+learn
+  .command('clear')
+  .description('Delete every learning. No confirmation prompt.')
+  .action(() => {
+    clearLearnings();
+    printJson({ cleared: true, file: learningsFile() });
+  });
+
+learn
+  .command('list', { isDefault: true })
+  .description('List all current learnings.')
+  .action(() => {
+    const items = loadLearnings();
+    printJson({ count: items.length, learnings: items, file: learningsFile() });
   });
 
 program

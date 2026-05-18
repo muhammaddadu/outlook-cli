@@ -39,11 +39,15 @@ export function makeFakeJwt({ expSeconds, claims = {} } = {}) {
  * Create a fresh tmp directory and write a token cache file inside it whose
  * Bearer JWT expires `secondsFromNow` from now. Returns the file path.
  */
-export function seedTokenCache({ secondsFromNow = 3600, headers = {} } = {}) {
+export function seedTokenCache({
+  secondsFromNow = 3600,
+  headers = {},
+  claims = {},
+} = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'outlook-test-'));
   const file = join(dir, 'auth.json');
   const exp = Math.floor(Date.now() / 1000) + secondsFromNow;
-  const jwt = makeFakeJwt({ expSeconds: exp });
+  const jwt = makeFakeJwt({ expSeconds: exp, claims });
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     file,
@@ -58,6 +62,11 @@ export function seedTokenCache({ secondsFromNow = 3600, headers = {} } = {}) {
     }),
   );
   return file;
+}
+
+/** Return a unique tmp path for an isolated learnings file. */
+export function freshLearningsPath() {
+  return join(mkdtempSync(join(tmpdir(), 'outlook-learn-')), 'learnings.md');
 }
 
 /**
