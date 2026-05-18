@@ -117,10 +117,65 @@ List mail folders (Inbox, Sent Items, Drafts, custom folders…).
 outlook folders | jq '.value[] | {DisplayName, UnreadItemCount}'
 ```
 
+### `outlook draft [json]`
+
+Create a **new draft** message. Same JSON shape as `send` but the message
+lands in the Drafts folder for you to review and send from Outlook.
+
+```bash
+cat <<'JSON' | outlook draft
+{
+  "Subject": "Q3 plan",
+  "Body": { "ContentType": "Text", "Content": "Draft body…" },
+  "ToRecipients": [{ "EmailAddress": { "Address": "team@example.com" } }]
+}
+JSON
+```
+
+Output includes the new `DraftId` and a `WebLink` you can click to open
+the draft in Outlook web.
+
+### `outlook draft-reply <id> [json]`
+
+Create a draft reply to an existing message. Outlook fills in the quoted
+thread automatically; the optional JSON override sets your new body or
+extra recipients:
+
+```bash
+outlook draft-reply $ID '{
+  "Body": { "ContentType": "Text", "Content": "Looks good — confirming." }
+}'
+```
+
+### `outlook draft-reply-all <id> [json]`
+
+Same as `draft-reply` but addresses every original recipient.
+
+### `outlook draft-forward <id> [json]`
+
+Create a draft forward. Usually you'll want the JSON override to add
+`ToRecipients`:
+
+```bash
+outlook draft-forward $ID '{
+  "ToRecipients": [{ "EmailAddress": { "Address": "boss@example.com" } }],
+  "Body": { "ContentType": "Text", "Content": "FYI" }
+}'
+```
+
+### `outlook discard-draft <id>`
+
+Permanently delete a draft. No confirmation prompt — call only when you're
+sure.
+
 ### `outlook send [json]`
 
-Send a message. Accepts the message JSON as an argument **or via STDIN**
-(preferred — keeps shell quoting sane).
+Send a message **immediately** (no review step). Accepts the message JSON
+as an argument or via STDIN.
+
+> Prefer the `draft-*` commands when an AI agent is composing on your
+> behalf — they let you review in Outlook before anything leaves your
+> mailbox.
 
 The payload shape is the Outlook REST v2 `Message` resource. Minimum
 viable example:

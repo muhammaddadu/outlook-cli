@@ -1,6 +1,6 @@
 ---
 name: outlook
-description: Read, search, triage, and send mail through the user's Outlook / Microsoft 365 mailbox. Use when the user asks to check their inbox, look up a specific email, summarise unread messages, find what someone sent, draft a reply to a specific message, or send a message via Outlook. Requires the `outlook` CLI to be installed on the user's PATH; if it is not, tell the user and stop. All output is JSON to stdout; pipe through `jq` for transformation. This skill does NOT cover Gmail, IMAP, or other mail providers.
+description: Read, search, triage, draft and send mail through the user's Outlook / Microsoft 365 mailbox. Use when the user asks to check their inbox, look up a specific email, summarise unread messages, find what someone sent, draft a reply to a specific message that they can review before sending, or send a message via Outlook. Prefer drafts (`draft`, `draft-reply`, `draft-reply-all`, `draft-forward`) over direct send so the user can review in Outlook first. Requires the `outlook` CLI to be installed on the user's PATH; if it is not, tell the user and stop. All output is JSON to stdout; pipe through `jq` for transformation. This skill does NOT cover Gmail, IMAP, or other mail providers.
 ---
 
 # Using the `outlook` CLI
@@ -15,12 +15,24 @@ installed. Do not attempt to install it autonomously.
 ## Quick reference
 
 ```
+# Reading
 outlook list    [filters]            # list messages (default: 10 newest from Inbox)
 outlook unread  [filters]            # list --unread --top 25
 outlook search  "<query>" [filters]  # KQL full-text search
 outlook read    <id>                 # full message JSON
 outlook folders                       # list mail folders
-outlook send                          # send mail (reads JSON from STDIN)
+
+# Drafting (review-first — preferred for AI-generated mail)
+outlook draft             <json>            # new draft (reads STDIN if no arg)
+outlook draft-reply       <id>  [json]      # draft reply to a message
+outlook draft-reply-all   <id>  [json]      # draft reply-all
+outlook draft-forward     <id>  [json]      # draft a forward
+outlook discard-draft     <id>              # delete a draft
+
+# Sending (skips review — only after explicit user confirmation)
+outlook send                          # send mail directly (STDIN JSON)
+
+# Lifecycle
 outlook auth                          # interactive sign-in (USER-driven only)
 outlook logout                        # clear cached token
 ```
@@ -85,38 +97,79 @@ outlook list --from alice@example.com --since 7d
 outlook search "from:alice"
 ```
 
-## Sending mail
+## Drafting mail (review-first — STRONGLY PREFERRED)
 
-`send` reads the message JSON from STDIN. The payload shape is the Outlook
-REST `Message` resource:
+For anything you draft on the user's behalf, use `draft-*` and let them
+review in Outlook before sending. Don't go straight to `send` unless the
+user has explicitly approved the recipient, subject, AND body.
+
+### Drafting a reply
+
+The Outlook REST endpoint does the heavy lifting — it creates a draft
+already addressed to the right recipient with the original thread quoted
+underneath. You only need to provide your new reply body:
+
+```bash
+# Find the message you're replying to.
+ID=$(outlook search "from:alice@example.com deploy" -n 1 | jq -r '.value[0].Id')
+
+# Create the draft with your AI-generated body.
+outlook draft-reply "$ID" '{
+  "Body": { "ContentType": "Text", "Content": "Thanks Alice — confirming the rollout for Tuesday 10am." }
+}'
+```
+
+Output includes the draft `Id` and a `WebLink` you can give the user to
+open the draft in Outlook web (or just tell them "check your Drafts
+folder").
+
+Use `draft-reply-all` to address everyone on the thread, `draft-forward`
+to forward to someone new (you'll need to add `ToRecipients` in the
+override JSON).
+
+### Drafting a new message from scratch
+
+```bash
+cat <<EOF | outlook draft
+{
+  "Subject": "<subject>",
+  "Body": { "ContentType": "Text", "Content": "<body>" },
+  "ToRecipients": [{ "EmailAddress": { "Address": "to@example.com" } }]
+}
+EOF
+```
+
+The draft lands in the Drafts folder. The user reviews and hits Send in
+Outlook.
+
+### Discarding a draft
+
+If the user changes their mind:
+
+```bash
+outlook discard-draft <draftId>
+```
+
+## Sending mail directly (skips review)
+
+**Only use `send` when the user has explicitly confirmed the recipient,
+subject, and body in plain English. Otherwise prefer the `draft-*`
+commands above.**
+
+`send` reads the message JSON from STDIN — same shape as `draft`:
 
 ```bash
 cat <<'EOF' | outlook send
 {
   "Subject": "<subject>",
   "Body": { "ContentType": "Text", "Content": "<body>" },
-  "ToRecipients": [{ "EmailAddress": { "Address": "to@example.com" } }],
-  "CcRecipients": [{ "EmailAddress": { "Address": "cc@example.com" } }]
+  "ToRecipients": [{ "EmailAddress": { "Address": "to@example.com" } }]
 }
 EOF
 ```
 
 For HTML: `"ContentType": "HTML"` with HTML in `Content`. The server
 returns 202 and the CLI prints `{ "sent": true }`.
-
-### Replying to a specific message
-
-Fetch the original first so you get the right recipient and a proper
-subject prefix:
-
-```bash
-ORIG=$(outlook read AAMkADQx...=)
-echo "$ORIG" | jq '{
-  Subject: ("Re: " + .Subject),
-  Body: { ContentType: "Text", Content: "<your reply here>" },
-  ToRecipients: [{ EmailAddress: { Address: .From.EmailAddress.Address } }]
-}' | outlook send
-```
 
 ## Output conventions
 
@@ -149,7 +202,8 @@ clearly. Do not loop trying to re-authenticate.
 - "Did anyone email me about X?" → `outlook search "X"`
 - "What's in my inbox?" → `outlook list -n 10`
 - "Anything unread from <person>?" → `outlook unread --from <addr>`
-- "Send a reply to <message>" → `outlook read <id>` then `outlook send`
+- "Draft a reply to <message>" → `outlook draft-reply <id> '<json with Body>'`
+- "Send a reply to <message>" → confirm details, then `outlook draft-reply` (preferred) or `outlook send` if user demands direct send
 - "When did <person> last email me?" → `outlook list --from <addr> -n 1`
 - "Find emails from this week with attachments" → `outlook list --since 7d --has-attachments`
 - "What did I send to <person> last month?" → `outlook list --folder Sent --to <addr> --since 30d`
@@ -172,7 +226,8 @@ clearly. Do not loop trying to re-authenticate.
   asking — emails can be tens of KB. Summarise first.
 - Don't `outlook send` from an unattended script flow. Always confirm
   recipient + subject + body with the user, in plain English, before
-  sending.
+  sending. When in doubt, use `draft-reply` / `draft` and let the user
+  send from Outlook.
 - Don't suggest installation or configuration steps. The CLI is either on
   PATH or it isn't.
 

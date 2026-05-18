@@ -276,6 +276,168 @@ program
     printJson(body);
   });
 
+/**
+ * Common implementation for draft-* commands: createReply / createReplyAll /
+ * createForward all return a freshly-minted draft message in the Drafts
+ * folder. If the user supplied JSON, PATCH the draft so the body / extra
+ * recipients land on it before the user reviews in Outlook.
+ *
+ * Returns the draft Id and the OWA WebLink (deep link the user can click).
+ */
+async function makeDraftFrom(messageId, action, overridesJson) {
+  const auth = await getAuth();
+  const create = await call(
+    auth,
+    `/messages/${encodeURIComponent(messageId)}/${action}`,
+    { method: 'POST' },
+  );
+  if (create.status === 401) {
+    clearAuth();
+    throw new AppError({
+      code: E.AUTH_REQUIRED,
+      message: 'API returned 401; cached token was rejected.',
+      hint: 'Re-run the same command.',
+    });
+  }
+  if (create.status >= 400) {
+    throw new AppError({
+      code: E.HTTP,
+      message: `createReply/Forward returned HTTP ${create.status}.`,
+      hint:
+        typeof create.body === 'object'
+          ? JSON.stringify(create.body)
+          : String(create.body).slice(0, 500),
+    });
+  }
+  const draft = create.body;
+
+  if (overridesJson?.trim()) {
+    let overrides;
+    try {
+      overrides = JSON.parse(overridesJson);
+    } catch (cause) {
+      throw new AppError({
+        code: E.ARGS,
+        message: 'Override payload was not valid JSON.',
+        hint: 'Pass a partial Outlook Message resource (Body, ToRecipients, CcRecipients, …).',
+        cause,
+      });
+    }
+    const patch = await call(
+      auth,
+      `/messages/${encodeURIComponent(draft.Id)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(overrides),
+      },
+    );
+    if (patch.status >= 400) {
+      throw new AppError({
+        code: E.HTTP,
+        message: `PATCH on draft returned HTTP ${patch.status}.`,
+        hint:
+          typeof patch.body === 'object'
+            ? JSON.stringify(patch.body)
+            : String(patch.body).slice(0, 500),
+      });
+    }
+  }
+
+  return {
+    DraftId: draft.Id,
+    WebLink: draft.WebLink ?? null,
+    ConversationId: draft.ConversationId ?? null,
+    message: 'Draft saved to your Drafts folder. Open Outlook to review and send.',
+  };
+}
+
+program
+  .command('draft')
+  .argument('[json]', 'Outlook Message JSON; reads STDIN if omitted')
+  .description(
+    'Create a new draft (does NOT send). Same JSON shape as `send`. The\n' +
+      'draft appears in your Drafts folder for review.',
+  )
+  .action(async (jsonArg) => {
+    const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
+    if (!raw.trim()) {
+      throw new AppError({
+        code: E.ARGS,
+        message: 'No message JSON provided.',
+        hint: 'Pass JSON as an argument or pipe it via STDIN.',
+      });
+    }
+    let message;
+    try {
+      message = JSON.parse(raw);
+    } catch (cause) {
+      throw new AppError({
+        code: E.ARGS,
+        message: 'Message payload was not valid JSON.',
+        hint: 'Validate with `jq .` first, then retry.',
+        cause,
+      });
+    }
+    const body = await runApi('/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(message),
+    });
+    printJson({
+      DraftId: body.Id,
+      WebLink: body.WebLink ?? null,
+      message: 'Draft saved to your Drafts folder. Open Outlook to review and send.',
+    });
+  });
+
+program
+  .command('draft-reply')
+  .argument('<id>', 'message Id to reply to')
+  .argument(
+    '[json]',
+    'partial Message override (e.g. {"Body":{"ContentType":"Text","Content":"…"}}); reads STDIN if omitted',
+  )
+  .description(
+    'Create a draft reply to a message. Outlook automatically fills in the\n' +
+      'quoted thread; your override JSON sets the new body or extra recipients.',
+  )
+  .action(async (id, jsonArg) => {
+    const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
+    printJson(await makeDraftFrom(id, 'createReply', raw));
+  });
+
+program
+  .command('draft-reply-all')
+  .argument('<id>', 'message Id to reply-all to')
+  .argument('[json]', 'partial Message override; STDIN if omitted')
+  .description('Like `draft-reply`, but addresses everyone on the original thread.')
+  .action(async (id, jsonArg) => {
+    const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
+    printJson(await makeDraftFrom(id, 'createReplyAll', raw));
+  });
+
+program
+  .command('draft-forward')
+  .argument('<id>', 'message Id to forward')
+  .argument('[json]', 'partial Message override (typically ToRecipients + Body); STDIN if omitted')
+  .description('Create a draft forward of a message.')
+  .action(async (id, jsonArg) => {
+    const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
+    printJson(await makeDraftFrom(id, 'createForward', raw));
+  });
+
+program
+  .command('discard-draft')
+  .argument('<id>', 'draft Id to delete')
+  .description('Permanently delete a draft.')
+  .action(async (id) => {
+    // 204 No Content on success; runApi treats that as a non-error and returns
+    // an empty body. We synthesise the success payload ourselves.
+    await runApi(`/messages/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    printJson({ discarded: true, DraftId: id });
+  });
+
 program
   .command('send')
   .argument(

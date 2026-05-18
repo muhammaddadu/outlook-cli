@@ -485,6 +485,207 @@ test('list --select overrides the default field list', async () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Drafts
+
+test('draft posts to /messages with the user-supplied JSON', async () => {
+  const captured = { method: null, url: null, body: null };
+  const mock = await startMockServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      captured.method = req.method;
+      captured.url = req.url;
+      captured.body = body;
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ Id: 'DRAFT123', WebLink: 'https://outlook.office.com/owa/?ItemID=DRAFT123' }));
+    });
+  });
+  try {
+    const payload = JSON.stringify({
+      Subject: 'draft me',
+      Body: { ContentType: 'Text', Content: 'hello' },
+      ToRecipients: [{ EmailAddress: { Address: 'a@b.com' } }],
+    });
+    const { code, stdout } = await runCli(['draft'], {
+      env: {
+        OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+        OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+      },
+      stdin: payload,
+    });
+    assert.equal(code, 0);
+    assert.equal(captured.method, 'POST');
+    assert.equal(captured.url, '/api/v2.0/me/messages');
+    assert.equal(JSON.parse(captured.body).Subject, 'draft me');
+
+    const out = JSON.parse(stdout);
+    assert.equal(out.DraftId, 'DRAFT123');
+    assert.match(out.WebLink, /outlook\.office\.com/);
+  } finally {
+    await mock.close();
+  }
+});
+
+test('draft-reply calls createReply and prints the new draft id + WebLink', async () => {
+  const reqs = [];
+  const mock = await startMockServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      reqs.push({ method: req.method, url: req.url, body });
+      if (req.url.endsWith('/createReply')) {
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ Id: 'REPLY99', WebLink: 'https://outlook.office.com/owa/?ItemID=REPLY99' }));
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{}');
+      }
+    });
+  });
+  try {
+    const { code, stdout } = await runCli(['draft-reply', 'ORIG-123'], {
+      env: {
+        OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+        OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+      },
+    });
+    assert.equal(code, 0);
+    assert.equal(reqs.length, 1, 'no PATCH when no override JSON is provided');
+    assert.equal(reqs[0].method, 'POST');
+    assert.equal(reqs[0].url, '/api/v2.0/me/messages/ORIG-123/createReply');
+
+    const out = JSON.parse(stdout);
+    assert.equal(out.DraftId, 'REPLY99');
+    assert.match(out.WebLink, /outlook\.office\.com/);
+    assert.match(out.message, /Drafts folder/);
+  } finally {
+    await mock.close();
+  }
+});
+
+test('draft-reply with override JSON PATCHes the new draft', async () => {
+  const reqs = [];
+  const mock = await startMockServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      reqs.push({ method: req.method, url: req.url, body });
+      if (req.url.endsWith('/createReply')) {
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ Id: 'REPLY-XYZ' }));
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{}');
+      }
+    });
+  });
+  try {
+    const override = JSON.stringify({
+      Body: { ContentType: 'Text', Content: 'thanks — looks great' },
+    });
+    const { code } = await runCli(['draft-reply', 'ORIG-1', override], {
+      env: {
+        OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+        OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+      },
+    });
+    assert.equal(code, 0);
+    assert.equal(reqs.length, 2);
+    assert.equal(reqs[1].method, 'PATCH');
+    assert.equal(reqs[1].url, '/api/v2.0/me/messages/REPLY-XYZ');
+    assert.match(reqs[1].body, /looks great/);
+  } finally {
+    await mock.close();
+  }
+});
+
+test('draft-reply-all hits createReplyAll', async () => {
+  let observedPath = null;
+  const mock = await startMockServer((req, res) => {
+    observedPath = req.url;
+    res.writeHead(201, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ Id: 'X' }));
+  });
+  try {
+    const { code } = await runCli(['draft-reply-all', 'ORIG-1'], {
+      env: {
+        OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+        OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+      },
+    });
+    assert.equal(code, 0);
+    assert.equal(observedPath, '/api/v2.0/me/messages/ORIG-1/createReplyAll');
+  } finally {
+    await mock.close();
+  }
+});
+
+test('draft-forward hits createForward', async () => {
+  let observedPath = null;
+  const mock = await startMockServer((req, res) => {
+    observedPath = req.url;
+    res.writeHead(201, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ Id: 'X' }));
+  });
+  try {
+    const { code } = await runCli(['draft-forward', 'ORIG-1'], {
+      env: {
+        OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+        OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+      },
+    });
+    assert.equal(code, 0);
+    assert.equal(observedPath, '/api/v2.0/me/messages/ORIG-1/createForward');
+  } finally {
+    await mock.close();
+  }
+});
+
+test('discard-draft DELETEs the message and prints a success payload', async () => {
+  let observed = null;
+  const mock = await startMockServer((req, res) => {
+    observed = { method: req.method, url: req.url };
+    res.writeHead(204);
+    res.end();
+  });
+  try {
+    const { code, stdout } = await runCli(['discard-draft', 'DRAFT-XYZ'], {
+      env: {
+        OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+        OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+      },
+    });
+    assert.equal(code, 0);
+    assert.equal(observed.method, 'DELETE');
+    assert.equal(observed.url, '/api/v2.0/me/messages/DRAFT-XYZ');
+    assert.deepEqual(JSON.parse(stdout), { discarded: true, DraftId: 'DRAFT-XYZ' });
+  } finally {
+    await mock.close();
+  }
+});
+
+test('draft-reply with malformed override JSON exits 64', async () => {
+  // Need a working mock so createReply succeeds before PATCH parse fails.
+  const mock = await startMockServer((req, res) => {
+    res.writeHead(201, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ Id: 'X' }));
+  });
+  try {
+    const { code, stderr } = await runCli(['draft-reply', 'ORIG-1', '{not-json'], {
+      env: {
+        OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+        OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+      },
+    });
+    assert.equal(code, 64);
+    assert.match(stderr, /E_ARGS/);
+    assert.match(stderr, /not valid JSON/);
+  } finally {
+    await mock.close();
+  }
+});
+
 test('logout removes the cache file and exits 0', async () => {
   const { existsSync } = await import('node:fs');
   const cache = seedTokenCache();
