@@ -38,9 +38,19 @@ outlook list --folder Sent --since 7d          # sent in the last week
 outlook search "deploy" --has-attachments      # full-text + filter
 ```
 
-And the agent skill lets Claude Code drive the CLI on your behalf — ask
-*"check my unread mail"* or *"send a reply to that email from Alice"* in any
-Claude Code session.
+In any Claude Code session you can now either:
+
+- **Ask in plain English** — the skill auto-loads when relevant:
+  *"Check my unread mail"*, *"Find emails from Alice this week"*,
+  *"Send a reply to the message from Bob"*.
+- **Use slash commands** for quick invocation:
+  - `/outlook <request>` — generic Outlook task
+  - `/inbox` — summarise the inbox
+  - `/unread` — triage unread mail
+
+> If Claude Code was already running when you installed, **restart it** so
+> the new skill and commands get picked up. Skills are loaded at session
+> start, not on the fly.
 
 ### From source (for development)
 
