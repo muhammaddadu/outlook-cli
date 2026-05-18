@@ -1,0 +1,65 @@
+# ─── Dependencies ────────────────────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+.yarn/
+
+# ─── Runtime state ───────────────────────────────────────────────────────────
+# Stateful data normally lives under $XDG_DATA_HOME / $XDG_CACHE_HOME outside
+# the repo. These entries protect against accidental commits if an earlier
+# layout or local override puts them in-tree.
+.profile/
+.cache/
+.local/
+
+# ─── Captured credentials ────────────────────────────────────────────────────
+# Defense in depth: if anything that looks like a token cache ever lands in
+# the repo by mistake, Git will refuse to stage it.
+auth-cache.json
+auth.json
+*.token.json
+*.bearer
+.env
+.env.*
+!.env.example
+
+# ─── Build / test artifacts ──────────────────────────────────────────────────
+dist/
+build/
+out/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# ─── Playwright ──────────────────────────────────────────────────────────────
+test-results/
+playwright-report/
+playwright/.cache/
+
+# ─── Logs ────────────────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ─── Editor / IDE ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.zed/
+
+# ─── OS junk ─────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ─── Temp / scratch ──────────────────────────────────────────────────────────
+tmp/
+temp/
+*.tmp
+.scratch/
