@@ -1,6 +1,6 @@
 ---
 name: outlook
-description: Read, search, triage, draft and send mail through the user's Outlook / Microsoft 365 mailbox. Use when the user asks to check their inbox, look up a specific email, summarise unread messages, find what someone sent, draft a reply to a specific message that they can review before sending, or send a message via Outlook. Prefer drafts (`draft`, `draft-reply`, `draft-reply-all`, `draft-forward`) over direct send so the user can review in Outlook first. Requires the `outlook` CLI to be installed on the user's PATH; if it is not, tell the user and stop. All output is JSON to stdout; pipe through `jq` for transformation. This skill does NOT cover Gmail, IMAP, or other mail providers.
+description: Read, search, triage, draft, and send mail PLUS view and manage calendar events through the user's Outlook / Microsoft 365 mailbox. Use when the user asks to check inbox, summarise unread mail, find a specific email, draft a reply they can review, send mail, view their calendar / agenda, find what meetings they have today / this week, create or update calendar events, RSVP to invites, or check free/busy. Prefer drafts (`draft`, `draft-reply`, `draft-reply-all`, `draft-forward`) over direct send so the user can review in Outlook first. Confirm with the user before creating or cancelling events with attendees (invitations / cancellations send IMMEDIATELY). Requires the `outlook` CLI to be installed on the user's PATH; if it is not, tell the user and stop. All output is JSON to stdout; pipe through `jq` for transformation. This skill does NOT cover Gmail, IMAP, or other mail providers.
 ---
 
 # Using the `outlook` CLI
@@ -84,6 +84,25 @@ outlook send                          # send mail directly (STDIN JSON)
 outlook auth                          # interactive sign-in (USER-driven only)
 outlook logout                        # clear cached token
 
+# Calendar — reading
+outlook agenda    [--from --to --days]     # what's on the calendar (expanded recurring instances)
+outlook events    [filters]                # generic event list (recurring masters, not instances)
+outlook event-read <id>                    # full event detail
+outlook calendars                           # list user's calendars
+
+# Calendar — writing  (events with attendees send invites IMMEDIATELY)
+outlook event-create   <json>              # create event
+outlook event-update   <id> <json>         # PATCH event
+outlook event-cancel   <id>                # delete event
+
+# Calendar — RSVP
+outlook accept     <id> [-c "<comment>"]   # RSVP yes
+outlook decline    <id> [-c "<comment>"]   # RSVP no
+outlook tentative  <id> [-c "<comment>"]   # RSVP maybe
+
+# Calendar — availability
+outlook free-busy <email> [<email>…] [--from --to --interval]
+
 # Self-learning (call at session start, then append observations)
 outlook context                       # user info + accumulated learnings (no network)
 outlook learn                         # list current learnings
@@ -162,7 +181,13 @@ user has explicitly approved the recipient, subject, AND body.
 
 The Outlook REST endpoint does the heavy lifting — it creates a draft
 already addressed to the right recipient with the original thread quoted
-underneath. You only need to provide your new reply body:
+underneath. You only need to provide your new reply body.
+
+Under the hood the CLI sends your text via the API's `Comment` field so
+the server can compose `<your reply>\n\n<quoted thread>` correctly. **Do
+not try to PATCH `Body` directly — that wipes the thread.** If you need
+to set non-body fields (Cc, Subject changes), pass them alongside `Body`
+in the override JSON; the CLI splits them and routes each correctly.
 
 ```bash
 # Find the message you're replying to.
@@ -204,6 +229,104 @@ If the user changes their mind:
 ```bash
 outlook discard-draft <draftId>
 ```
+
+## Calendar
+
+### Reading the calendar
+
+```bash
+outlook agenda                          # next 7 days, primary calendar
+outlook agenda --days 14                # next 2 weeks
+outlook agenda --from today --to tomorrow   # just today
+outlook agenda --from "+7d" --to "+14d"     # week 2 from now
+outlook agenda --calendar <calendarId>      # a specific (non-primary) calendar
+outlook agenda --organizer alice@example.com  # only meetings Alice runs
+outlook agenda --subject "standup"           # filter by subject substring
+```
+
+`agenda` uses `/calendarView` under the hood, so recurring events are
+expanded into individual instances — which is what humans expect when
+they say "what's on my calendar." Use `outlook events` for filter-heavy
+non-time-bound queries (recurring master series, cancelled events, etc.).
+
+Each result row has at least: `Id`, `Subject`, `Start`, `End`, `Location`,
+`Organizer`, `Attendees`, `IsAllDay`, `ShowAs`, `IsCancelled`,
+`IsOnlineMeeting`, `OnlineMeetingUrl`, `ResponseStatus`. Call
+`outlook event-read <id>` for the full body / attachments / reminders.
+
+### Creating calendar events
+
+The full event payload is the Outlook Event resource. Minimum viable
+example (no attendees → calendar block only):
+
+```bash
+cat <<EOF | outlook event-create
+{
+  "Subject": "Focus block",
+  "Start": { "DateTime": "2026-05-25T14:00:00", "TimeZone": "Pacific Standard Time" },
+  "End":   { "DateTime": "2026-05-25T15:30:00", "TimeZone": "Pacific Standard Time" },
+  "ShowAs": "Busy"
+}
+EOF
+```
+
+With attendees → **invitations send immediately**. Always confirm with the
+user first:
+
+```bash
+cat <<EOF | outlook event-create
+{
+  "Subject": "1:1 with Alice",
+  "Start": { "DateTime": "2026-05-25T10:00:00", "TimeZone": "Pacific Standard Time" },
+  "End":   { "DateTime": "2026-05-25T10:30:00", "TimeZone": "Pacific Standard Time" },
+  "Attendees": [
+    { "EmailAddress": { "Address": "alice@example.com" }, "Type": "Required" }
+  ],
+  "IsOnlineMeeting": true,
+  "OnlineMeetingProvider": "teamsForBusiness"
+}
+EOF
+```
+
+### Updating / cancelling events
+
+```bash
+outlook event-update <id> '{"Subject":"renamed", "Location":{"DisplayName":"Room 12"}}'
+outlook event-cancel <id>     # if event has attendees, sends cancellation notices
+```
+
+### RSVP
+
+```bash
+outlook accept    <id>                       # quiet accept
+outlook accept    <id> -c "looking forward"  # accept with comment
+outlook decline   <id> --no-respond           # decline without notifying organiser
+outlook tentative <id>
+```
+
+### Free/busy lookup
+
+```bash
+outlook free-busy alice@example.com bob@example.com --from today --to tomorrow
+outlook free-busy alice@example.com --interval 15
+```
+
+Returns an `AvailabilityView` string per person — characters indicate
+free (`0`), tentative (`1`), busy (`2`), oof (`3`), working-elsewhere
+(`4`) at each `interval`-minute slot. Use this to suggest meeting times.
+
+### Calendar safety rules
+
+- **Events with attendees send invitations / updates / cancellations
+  immediately.** No "draft" workflow exists for meetings. Always
+  confirm recipient list + time + subject + body with the user before
+  calling `event-create` or `event-update` on something that has
+  `Attendees`.
+- **Cancelling an event with attendees notifies them.** Confirm before
+  `event-cancel`.
+- For personal calendar blocks (no Attendees), feel free to create
+  without confirmation if the user clearly asked for one ("block 2-3pm
+  Friday for deep work").
 
 ## Sending mail directly (skips review)
 

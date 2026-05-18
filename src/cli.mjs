@@ -23,6 +23,11 @@ import { printJson, info, errorBlock, debug } from './output.mjs';
 import { AppError, E, EXIT, exitCodeFor } from './errors.mjs';
 import { buildFilter, buildQuery, resolveFolder } from './odata.mjs';
 import {
+  resolveEventRange,
+  calendarViewPath,
+  buildEventFilter,
+} from './calendar.mjs';
+import {
   loadLearnings,
   addLearning,
   removeLearning,
@@ -290,6 +295,251 @@ learn
     printJson({ count: items.length, learnings: items, file: learningsFile() });
   });
 
+// ---------------------------------------------------------------------------
+// Calendar
+
+const EVENT_SELECT =
+  'Id,Subject,Start,End,Location,Organizer,Attendees,IsAllDay,ShowAs,IsCancelled,IsOnlineMeeting,OnlineMeetingUrl,ResponseStatus,BodyPreview';
+
+program
+  .command('agenda')
+  .description(
+    'Show events from your calendar in a time window.\n' +
+      'Defaults: from now, for the next 7 days, primary calendar.',
+  )
+  .option('--from <when>', 'window start (default: now)')
+  .option('--to <when>', 'window end (default: 7 days from start)')
+  .option('--days <n>', 'shortcut for --to: window length in days')
+  .option('-n, --top <count>', 'max events to return', '50')
+  .option('-s, --skip <count>', 'pagination offset')
+  .option('--calendar <id>', 'calendar Id (default: primary)')
+  .option('--organizer <addr>', 'only events organised by this person')
+  .option('--show-as <state>', 'Free | Tentative | Busy | Oof | WorkingElsewhere | Unknown')
+  .option('--subject <text>', 'subject contains substring (case-insensitive)')
+  .option('--filter <odata>', 'raw $filter expression — ANDed with the friendly flags')
+  .option('--order-by <expr>', 'OData $orderby (default: "Start/DateTime asc")')
+  .option('--select <fields>', 'override the default field set')
+  .action(async (opts) => {
+    const { start, end } = resolveEventRange({
+      from: opts.from,
+      to: opts.to,
+      days: opts.days,
+    });
+    const filter = buildEventFilter({
+      organizer: opts.organizer,
+      showAs: opts.showAs,
+      subject: opts.subject,
+      raw: opts.filter,
+    });
+    const base = opts.calendar
+      ? `/calendars/${encodeURIComponent(opts.calendar)}`
+      : '';
+    const path =
+      base +
+      calendarViewPath(
+        { start, end },
+        {
+          top: opts.top,
+          skip: opts.skip,
+          filter,
+          orderBy: opts.orderBy ?? 'Start/DateTime asc',
+          select: opts.select ?? EVENT_SELECT,
+        },
+      );
+    const body = await runApi(path);
+    printJson(body);
+  });
+
+program
+  .command('events')
+  .description(
+    'Generic event list (no time-range expansion). Use this for filter-\n' +
+      'heavy queries or to see recurring master series; for "what\'s on my\n' +
+      'calendar this week", use `agenda` instead.',
+  )
+  .option('-n, --top <count>', 'how many events to fetch', '25')
+  .option('-s, --skip <count>', 'pagination offset')
+  .option('--organizer <addr>', 'only events organised by this person')
+  .option('--show-as <state>', 'Free | Tentative | Busy | Oof | WorkingElsewhere | Unknown')
+  .option('--subject <text>', 'subject contains substring')
+  .option('--all-day', 'only all-day events')
+  .option('--cancelled', 'only cancelled events')
+  .option('--filter <odata>', 'raw $filter expression')
+  .option('--order-by <expr>', `OData $orderby (default: "Start/DateTime desc")`)
+  .option('--select <fields>', 'override the default field set')
+  .action(async (opts) => {
+    const filter = buildEventFilter({
+      organizer: opts.organizer,
+      showAs: opts.showAs,
+      subject: opts.subject,
+      isAllDay: opts.allDay,
+      isCancelled: opts.cancelled,
+      raw: opts.filter,
+    });
+    const query = buildQuery({
+      top: opts.top,
+      skip: opts.skip,
+      filter,
+      orderBy: opts.orderBy ?? 'Start/DateTime desc',
+      select: opts.select ?? EVENT_SELECT,
+    });
+    const body = await runApi(`/events${query}`);
+    printJson(body);
+  });
+
+program
+  .command('event-read')
+  .argument('<id>', 'event Id')
+  .description('Read a single event in full.')
+  .action(async (id) => {
+    const body = await runApi(`/events/${encodeURIComponent(id)}`);
+    printJson(body);
+  });
+
+program
+  .command('calendars')
+  .description('List the user\'s calendars (primary + secondary + shared).')
+  .action(async () => {
+    const body = await runApi('/calendars');
+    printJson(body);
+  });
+
+program
+  .command('event-create')
+  .argument('[json]', 'Outlook Event JSON; reads STDIN if omitted')
+  .description(
+    'Create a calendar event. **If the event has Attendees, invitations\n' +
+      'are sent IMMEDIATELY** — confirm with the user first. For meetings,\n' +
+      'consider running with no Attendees first, then adding them in\n' +
+      'Outlook after review.',
+  )
+  .action(async (jsonArg) => {
+    const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
+    if (!raw.trim()) {
+      throw new AppError({
+        code: E.ARGS,
+        message: 'No event JSON provided.',
+        hint: 'Pass JSON as an argument or pipe it via STDIN.',
+      });
+    }
+    let message;
+    try {
+      message = JSON.parse(raw);
+    } catch (cause) {
+      throw new AppError({
+        code: E.ARGS,
+        message: 'Event payload was not valid JSON.',
+        hint: 'Validate with `jq .` first, then retry.',
+        cause,
+      });
+    }
+    const body = await runApi('/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(message),
+    });
+    printJson(body);
+  });
+
+program
+  .command('event-update')
+  .argument('<id>', 'event Id to modify')
+  .argument('[json]', 'partial Event override; reads STDIN if omitted')
+  .description(
+    'Update an event. PATCH semantics — only fields in the JSON are\n' +
+      'changed. If the event has attendees, an update notification is\n' +
+      'usually sent.',
+  )
+  .action(async (id, jsonArg) => {
+    const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
+    if (!raw.trim()) {
+      throw new AppError({
+        code: E.ARGS,
+        message: 'No override JSON provided.',
+        hint: 'Pass JSON as an argument or pipe it via STDIN.',
+      });
+    }
+    let patch;
+    try {
+      patch = JSON.parse(raw);
+    } catch (cause) {
+      throw new AppError({
+        code: E.ARGS,
+        message: 'Override payload was not valid JSON.',
+        hint: 'Validate with `jq .` first, then retry.',
+        cause,
+      });
+    }
+    const body = await runApi(`/events/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    printJson(body);
+  });
+
+program
+  .command('event-cancel')
+  .argument('<id>', 'event Id to cancel')
+  .description(
+    'Cancel/delete an event. If the event has attendees, **cancellation\n' +
+      'notifications are sent immediately**. Confirm with the user first.',
+  )
+  .action(async (id) => {
+    await runApi(`/events/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    printJson({ cancelled: true, EventId: id });
+  });
+
+for (const verb of ['accept', 'decline', 'tentative']) {
+  const action =
+    verb === 'tentative' ? 'tentativelyAccept' : verb; // Outlook uses tentativelyAccept
+  program
+    .command(verb)
+    .argument('<id>', 'event Id')
+    .option('-c, --comment <text>', 'response comment included in the RSVP')
+    .option('--no-respond', 'do not notify the organiser of your response')
+    .description(`RSVP "${verb}" to a meeting.`)
+    .action(async (id, opts) => {
+      const payload = { SendResponse: opts.respond !== false };
+      if (opts.comment) payload.Comment = opts.comment;
+      await runApi(`/events/${encodeURIComponent(id)}/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      printJson({ rsvp: verb, EventId: id, SendResponse: payload.SendResponse });
+    });
+}
+
+program
+  .command('free-busy')
+  .description(
+    'Get schedule (free/busy) info for one or more people in a window.\n' +
+      'Defaults: now → +1d, 30-minute slot granularity.',
+  )
+  .argument('<emails...>', 'one or more email addresses')
+  .option('--from <when>', 'window start (default: now)')
+  .option('--to <when>', 'window end (default: 24h from start)')
+  .option('--interval <minutes>', 'slot granularity', '30')
+  .action(async (emails, opts) => {
+    const { start, end } = resolveEventRange({
+      from: opts.from,
+      to: opts.to,
+      days: opts.to ? null : 1, // default window is 24h not 7d
+    });
+    const body = await runApi('/getSchedule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        Schedules: emails,
+        StartTime: { DateTime: start.toISOString(), TimeZone: 'UTC' },
+        EndTime: { DateTime: end.toISOString(), TimeZone: 'UTC' },
+        AvailabilityViewInterval: Number(opts.interval),
+      }),
+    });
+    printJson(body);
+  });
+
 program
   .command('logout')
   .description('Clear the local token cache (does not sign you out of OWA).')
@@ -368,19 +618,64 @@ program
   });
 
 /**
- * Common implementation for draft-* commands: createReply / createReplyAll /
- * createForward all return a freshly-minted draft message in the Drafts
- * folder. If the user supplied JSON, PATCH the draft so the body / extra
- * recipients land on it before the user reviews in Outlook.
+ * Common implementation for draft-* commands.
+ *
+ * The bug we're avoiding: if you call createReply / createReplyAll /
+ * createForward and then PATCH the resulting draft with a full
+ * `Body` resource, the server REPLACES the body entirely — wiping out
+ * the quoted original thread that createReply had just populated.
+ *
+ * Fix: the user's new reply text goes into the `Comment` field of the
+ * createReply request body. The server then writes a draft whose body
+ * looks like `<your comment>\n\n<quoted thread>` (or the HTML
+ * equivalent), preserving the thread. Other override fields
+ * (CcRecipients, Subject changes, etc.) are PATCHed after, since they
+ * don't conflict with body composition.
  *
  * Returns the draft Id and the OWA WebLink (deep link the user can click).
  */
 async function makeDraftFrom(messageId, action, overridesJson) {
   const auth = await getAuth();
+
+  // Parse overrides up-front so we can fail fast and split body vs non-body.
+  let overrides = null;
+  if (overridesJson?.trim()) {
+    try {
+      overrides = JSON.parse(overridesJson);
+    } catch (cause) {
+      throw new AppError({
+        code: E.ARGS,
+        message: 'Override payload was not valid JSON.',
+        hint: 'Pass a partial Outlook Message resource (Body, ToRecipients, CcRecipients, …).',
+        cause,
+      });
+    }
+  }
+
+  let bodyComment = null;
+  let nonBodyOverrides = null;
+  if (overrides) {
+    const { Body, ...rest } = overrides;
+    // Comment is plain text per the Outlook API contract. Server formats it
+    // into whatever ContentType matches the thread.
+    if (Body && typeof Body.Content === 'string') {
+      bodyComment = Body.Content;
+    }
+    if (Object.keys(rest).length > 0) {
+      nonBodyOverrides = rest;
+    }
+  }
+
+  // ---- 1. createReply / createReplyAll / createForward (with Comment) ----
+  const createInit = { method: 'POST' };
+  if (bodyComment !== null) {
+    createInit.headers = { 'Content-Type': 'application/json' };
+    createInit.body = JSON.stringify({ Comment: bodyComment });
+  }
   const create = await call(
     auth,
     `/messages/${encodeURIComponent(messageId)}/${action}`,
-    { method: 'POST' },
+    createInit,
   );
   if (create.status === 401) {
     clearAuth();
@@ -393,7 +688,7 @@ async function makeDraftFrom(messageId, action, overridesJson) {
   if (create.status >= 400) {
     throw new AppError({
       code: E.HTTP,
-      message: `createReply/Forward returned HTTP ${create.status}.`,
+      message: `${action} returned HTTP ${create.status}.`,
       hint:
         typeof create.body === 'object'
           ? JSON.stringify(create.body)
@@ -402,25 +697,15 @@ async function makeDraftFrom(messageId, action, overridesJson) {
   }
   const draft = create.body;
 
-  if (overridesJson?.trim()) {
-    let overrides;
-    try {
-      overrides = JSON.parse(overridesJson);
-    } catch (cause) {
-      throw new AppError({
-        code: E.ARGS,
-        message: 'Override payload was not valid JSON.',
-        hint: 'Pass a partial Outlook Message resource (Body, ToRecipients, CcRecipients, …).',
-        cause,
-      });
-    }
+  // ---- 2. PATCH non-body overrides (CcRecipients, Subject, etc.) --------
+  if (nonBodyOverrides) {
     const patch = await call(
       auth,
       `/messages/${encodeURIComponent(draft.Id)}`,
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(overrides),
+        body: JSON.stringify(nonBodyOverrides),
       },
     );
     if (patch.status >= 400) {

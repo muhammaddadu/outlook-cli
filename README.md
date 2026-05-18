@@ -33,9 +33,17 @@ outlook list -n 5           # smoke test
 After that, the binary is on your `$PATH` everywhere:
 
 ```bash
+# Mail
 outlook unread --from boss@example.com         # unread from your boss
 outlook list --folder Sent --since 7d          # sent in the last week
 outlook search "deploy" --has-attachments      # full-text + filter
+outlook draft-reply <id> '{...}'               # AI-composed draft for review
+
+# Calendar
+outlook agenda --days 7                        # next week
+outlook agenda --from today --to tomorrow      # just today
+outlook free-busy alice@example.com bob@example.com   # availability lookup
+outlook accept <event-id> -c "see you there"   # RSVP
 ```
 
 `outlook setup --with-skill` auto-detects every AI agent on your machine

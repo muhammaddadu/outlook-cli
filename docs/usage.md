@@ -168,6 +168,113 @@ outlook draft-forward $ID '{
 Permanently delete a draft. No confirmation prompt — call only when you're
 sure.
 
+## Calendar
+
+### `outlook agenda [options]`
+
+Show events in a time window. Uses `/calendarView` so recurring events
+are expanded into individual instances.
+
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `--from <when>` | `now` | Window start (ISO, `today`, `tomorrow`, `-1d`, etc.) |
+| `--to <when>` | start + days | Window end |
+| `--days <n>` | `7` | Shortcut for `--to: start + n days` |
+| `--calendar <id>` | primary | Non-primary calendar Id |
+| `--organizer <addr>` | — | Only events organised by this person |
+| `--subject <text>` | — | Subject contains substring |
+| `--show-as <state>` | — | `Free` / `Tentative` / `Busy` / `Oof` / `WorkingElsewhere` |
+| `-n, --top <N>` | `50` | Max events to fetch |
+| `-s, --skip <N>` | — | Pagination offset |
+| `--filter <odata>` | — | Raw $filter (ANDed with the friendly flags) |
+| `--order-by <expr>` | `Start/DateTime asc` | OData $orderby |
+| `--select <fields>` | sensible default | CSV of fields to return |
+
+```bash
+outlook agenda                          # next 7 days
+outlook agenda --days 1                 # today + a bit
+outlook agenda --from today --to tomorrow
+outlook agenda --organizer boss@example.com
+outlook agenda --subject "1:1"
+```
+
+### `outlook events [options]`
+
+Generic event list — does NOT expand recurring instances. Use for
+filter-heavy queries against the raw `/events` collection (recurring
+masters, cancelled events, etc.). Same filter flags as `agenda` minus the
+time-range ones, plus `--all-day` and `--cancelled`.
+
+### `outlook event-read <id>`
+
+Full event detail — body, attachments metadata, recurrence rule, etc.
+
+### `outlook calendars`
+
+List the user's calendars (primary, secondary, shared).
+
+### `outlook event-create [json]`
+
+Create an event. The JSON is the Outlook Event resource:
+
+```bash
+cat <<JSON | outlook event-create
+{
+  "Subject": "Focus block",
+  "Start": { "DateTime": "2026-05-25T14:00:00", "TimeZone": "America/New_York" },
+  "End":   { "DateTime": "2026-05-25T15:30:00", "TimeZone": "America/New_York" },
+  "ShowAs": "Busy"
+}
+JSON
+```
+
+> **⚠ Invitations send immediately when `Attendees` is non-empty.** There
+> is no "draft" workflow for meetings. Confirm with attendees / yourself
+> before adding people to the payload.
+
+### `outlook event-update <id> [json]`
+
+PATCH the event with the provided partial Event JSON.
+
+### `outlook event-cancel <id>`
+
+Cancel/delete the event. Sends cancellation notices to attendees if any.
+
+### `outlook accept|decline|tentative <id> [options]`
+
+RSVP to a meeting.
+
+| Flag | Effect |
+| --- | --- |
+| `-c, --comment <text>` | Include a response comment |
+| `--no-respond` | Don't notify the organiser of your response |
+
+```bash
+outlook accept    $ID -c "looking forward to it"
+outlook decline   $ID --no-respond
+outlook tentative $ID
+```
+
+### `outlook free-busy <emails…> [options]`
+
+Look up free/busy schedule for one or more people.
+
+```bash
+outlook free-busy alice@example.com bob@example.com --from today --to tomorrow
+outlook free-busy alice@example.com --interval 15
+```
+
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `--from <when>` | `now` | Window start |
+| `--to <when>` | `+24h` | Window end |
+| `--interval <minutes>` | `30` | Slot granularity |
+
+Returns `AvailabilityView` strings — `0`=free, `1`=tentative, `2`=busy,
+`3`=oof, `4`=working-elsewhere. Use to suggest meeting times.
+
+---
+
 ### `outlook send [json]`
 
 Send a message **immediately** (no review step). Accepts the message JSON

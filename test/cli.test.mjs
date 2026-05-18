@@ -564,7 +564,7 @@ test('draft-reply calls createReply and prints the new draft id + WebLink', asyn
   }
 });
 
-test('draft-reply with override JSON PATCHes the new draft', async () => {
+test('draft-reply with body override sends Comment in createReply (preserves thread)', async () => {
   const reqs = [];
   const mock = await startMockServer((req, res) => {
     let body = '';
@@ -591,10 +591,56 @@ test('draft-reply with override JSON PATCHes the new draft', async () => {
       },
     });
     assert.equal(code, 0);
+    // Only one call should fire — createReply with Comment. No PATCH, so
+    // the server-populated quoted thread is preserved.
+    assert.equal(reqs.length, 1, 'expected exactly one request (createReply)');
+    assert.equal(reqs[0].method, 'POST');
+    assert.equal(reqs[0].url, '/api/v2.0/me/messages/ORIG-1/createReply');
+    assert.deepEqual(JSON.parse(reqs[0].body), { Comment: 'thanks — looks great' });
+  } finally {
+    await mock.close();
+  }
+});
+
+test('draft-reply with non-body overrides still PATCHes those fields', async () => {
+  const reqs = [];
+  const mock = await startMockServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      reqs.push({ method: req.method, url: req.url, body });
+      if (req.url.endsWith('/createReply')) {
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ Id: 'REPLY-XYZ' }));
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{}');
+      }
+    });
+  });
+  try {
+    const override = JSON.stringify({
+      Body: { ContentType: 'Text', Content: 'thanks' },
+      CcRecipients: [{ EmailAddress: { Address: 'cc@example.com' } }],
+    });
+    const { code } = await runCli(['draft-reply', 'ORIG-1', override], {
+      env: {
+        OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+        OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+      },
+    });
+    assert.equal(code, 0);
     assert.equal(reqs.length, 2);
+    // First: createReply with Comment (body)
+    assert.equal(reqs[0].method, 'POST');
+    assert.equal(reqs[0].url, '/api/v2.0/me/messages/ORIG-1/createReply');
+    assert.deepEqual(JSON.parse(reqs[0].body), { Comment: 'thanks' });
+    // Second: PATCH only the non-body fields
     assert.equal(reqs[1].method, 'PATCH');
     assert.equal(reqs[1].url, '/api/v2.0/me/messages/REPLY-XYZ');
-    assert.match(reqs[1].body, /looks great/);
+    const patchBody = JSON.parse(reqs[1].body);
+    assert.equal(patchBody.Body, undefined, 'PATCH must not include Body');
+    assert.deepEqual(patchBody.CcRecipients, [{ EmailAddress: { Address: 'cc@example.com' } }]);
   } finally {
     await mock.close();
   }
@@ -779,6 +825,250 @@ test('learn add deduplicates near-identical observations', async () => {
   assert.equal(JSON.parse(second.stdout).added, false);
   const list = await runCli(['learn'], { env });
   assert.equal(JSON.parse(list.stdout).count, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Calendar
+
+test('agenda calls /calendarView with startDateTime/endDateTime', async () => {
+  let observedUrl = null;
+  const mock = await startMockServer((req, res) => {
+    observedUrl = req.url;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ value: [{ Subject: 'Standup' }] }));
+  });
+  try {
+    const { code, stdout } = await runCli(['agenda', '--days', '3'], {
+      env: {
+        OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+        OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+      },
+    });
+    assert.equal(code, 0);
+    assert.match(observedUrl, /\/calendarView/);
+    assert.match(observedUrl, /startDateTime=/);
+    assert.match(observedUrl, /endDateTime=/);
+    assert.match(observedUrl, /\$top=50/);
+    assert.match(observedUrl, /\$orderby=Start%2FDateTime%20asc/);
+    assert.equal(JSON.parse(stdout).value[0].Subject, 'Standup');
+  } finally {
+    await mock.close();
+  }
+});
+
+test('agenda --calendar routes to /calendars/<id>/calendarView', async () => {
+  let observedPath = null;
+  const mock = await startMockServer((req, res) => {
+    observedPath = req.url.split('?')[0];
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ value: [] }));
+  });
+  try {
+    const { code } = await runCli(['agenda', '--calendar', 'CAL-123'], {
+      env: {
+        OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+        OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+      },
+    });
+    assert.equal(code, 0);
+    assert.equal(observedPath, '/api/v2.0/me/calendars/CAL-123/calendarView');
+  } finally {
+    await mock.close();
+  }
+});
+
+test('events hits /events without time-range expansion', async () => {
+  let observedUrl = null;
+  const mock = await startMockServer((req, res) => {
+    observedUrl = req.url;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ value: [] }));
+  });
+  try {
+    const { code } = await runCli(
+      ['events', '--organizer', 'boss@example.com', '--subject', 'review', '-n', '5'],
+      {
+        env: {
+          OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+          OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+        },
+      },
+    );
+    assert.equal(code, 0);
+    const decoded = decodeURIComponent(observedUrl);
+    assert.match(observedUrl, /\/events\?/);
+    assert.match(observedUrl, /\$top=5/);
+    assert.match(decoded, /Organizer\/EmailAddress\/Address eq 'boss@example\.com'/);
+    assert.match(decoded, /contains\(Subject, 'review'\)/);
+  } finally {
+    await mock.close();
+  }
+});
+
+test('event-create POSTs the JSON to /events', async () => {
+  const captured = { method: null, url: null, body: null };
+  const mock = await startMockServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      captured.method = req.method;
+      captured.url = req.url;
+      captured.body = body;
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ Id: 'NEW-EVT', Subject: JSON.parse(body).Subject }));
+    });
+  });
+  try {
+    const payload = JSON.stringify({
+      Subject: '1:1',
+      Start: { DateTime: '2026-06-01T10:00:00', TimeZone: 'UTC' },
+      End: { DateTime: '2026-06-01T10:30:00', TimeZone: 'UTC' },
+    });
+    const { code, stdout } = await runCli(['event-create'], {
+      env: {
+        OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+        OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+      },
+      stdin: payload,
+    });
+    assert.equal(code, 0);
+    assert.equal(captured.method, 'POST');
+    assert.equal(captured.url, '/api/v2.0/me/events');
+    assert.equal(JSON.parse(captured.body).Subject, '1:1');
+    assert.equal(JSON.parse(stdout).Id, 'NEW-EVT');
+  } finally {
+    await mock.close();
+  }
+});
+
+test('event-update PATCHes /events/<id>', async () => {
+  const reqs = [];
+  const mock = await startMockServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      reqs.push({ method: req.method, url: req.url, body });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ Id: 'EVT-1' }));
+    });
+  });
+  try {
+    const { code } = await runCli(
+      ['event-update', 'EVT-1', '{"Subject":"Renamed"}'],
+      {
+        env: {
+          OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+          OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+        },
+      },
+    );
+    assert.equal(code, 0);
+    assert.equal(reqs[0].method, 'PATCH');
+    assert.equal(reqs[0].url, '/api/v2.0/me/events/EVT-1');
+    assert.equal(JSON.parse(reqs[0].body).Subject, 'Renamed');
+  } finally {
+    await mock.close();
+  }
+});
+
+test('event-cancel DELETEs and reports success', async () => {
+  let observed = null;
+  const mock = await startMockServer((req, res) => {
+    observed = { method: req.method, url: req.url };
+    res.writeHead(204);
+    res.end();
+  });
+  try {
+    const { code, stdout } = await runCli(['event-cancel', 'EVT-9'], {
+      env: {
+        OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+        OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+      },
+    });
+    assert.equal(code, 0);
+    assert.equal(observed.method, 'DELETE');
+    assert.equal(observed.url, '/api/v2.0/me/events/EVT-9');
+    assert.deepEqual(JSON.parse(stdout), { cancelled: true, EventId: 'EVT-9' });
+  } finally {
+    await mock.close();
+  }
+});
+
+for (const [verb, expectedAction] of [
+  ['accept', 'accept'],
+  ['decline', 'decline'],
+  ['tentative', 'tentativelyAccept'],
+]) {
+  test(`${verb} POSTs to /events/<id>/${expectedAction}`, async () => {
+    let observed = null;
+    const mock = await startMockServer((req, res) => {
+      let body = '';
+      req.on('data', (d) => (body += d));
+      req.on('end', () => {
+        observed = { method: req.method, url: req.url, body };
+        res.writeHead(202);
+        res.end();
+      });
+    });
+    try {
+      const { code, stdout } = await runCli(
+        [verb, 'EVT-1', '-c', 'sounds good'],
+        {
+          env: {
+            OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+            OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+          },
+        },
+      );
+      assert.equal(code, 0);
+      assert.equal(observed.method, 'POST');
+      assert.equal(observed.url, `/api/v2.0/me/events/EVT-1/${expectedAction}`);
+      const body = JSON.parse(observed.body);
+      assert.equal(body.Comment, 'sounds good');
+      assert.equal(body.SendResponse, true);
+      const out = JSON.parse(stdout);
+      assert.equal(out.rsvp, verb);
+      assert.equal(out.EventId, 'EVT-1');
+    } finally {
+      await mock.close();
+    }
+  });
+}
+
+test('free-busy POSTs the right schedule shape to /getSchedule', async () => {
+  const captured = { method: null, url: null, body: null };
+  const mock = await startMockServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      captured.method = req.method;
+      captured.url = req.url;
+      captured.body = body;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ value: [] }));
+    });
+  });
+  try {
+    const { code } = await runCli(
+      ['free-busy', 'a@b.com', 'c@d.com', '--interval', '60'],
+      {
+        env: {
+          OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+          OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+        },
+      },
+    );
+    assert.equal(code, 0);
+    assert.equal(captured.method, 'POST');
+    assert.equal(captured.url, '/api/v2.0/me/getSchedule');
+    const body = JSON.parse(captured.body);
+    assert.deepEqual(body.Schedules, ['a@b.com', 'c@d.com']);
+    assert.equal(body.AvailabilityViewInterval, 60);
+    assert.ok(body.StartTime.DateTime);
+    assert.ok(body.EndTime.DateTime);
+  } finally {
+    await mock.close();
+  }
 });
 
 test('logout removes the cache file and exits 0', async () => {
