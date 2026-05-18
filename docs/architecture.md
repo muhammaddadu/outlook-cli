@@ -166,13 +166,39 @@ outlook send [json] # send mail (JSON arg or STDIN)
 Global `--debug` flag wires through `OUTLOOK_DEBUG=1` to enable `debug()`
 output to stderr. Global `--version` derived from `package.json`.
 
+## Calendar surface
+
+Calendar lives on the same backend as mail — same Bearer, same routing
+headers, just different paths. The CLI splits queries between two
+endpoints depending on the use case:
+
+| Endpoint | Wrapped by | When |
+| --- | --- | --- |
+| `GET /me/calendarView?startDateTime=&endDateTime=` | `outlook agenda` | "What's on my calendar this week" — the server expands recurring events into individual instances within the window. |
+| `GET /me/events` | `outlook events` | Generic event queries (filter by organizer, all-day, cancelled, etc.). Returns recurring **master series**, not instances. |
+| `POST /me/events` | `outlook event-create` | Create event. With Attendees → invitations send IMMEDIATELY. No draft workflow exists for meetings. |
+| `PATCH /me/events/{id}` | `outlook event-update` | Modify event. Attendees → update notification sent. |
+| `DELETE /me/events/{id}` | `outlook event-cancel` | Cancel event. Attendees → cancellation notice sent. |
+| `POST /me/events/{id}/{accept,decline,tentativelyAccept}` | `outlook accept` / `decline` / `tentative` | RSVP with optional comment. |
+| `POST /me/getSchedule` | `outlook free-busy` | Free/busy lookup across multiple mailboxes; returns an `AvailabilityView` per person. |
+| `GET /me/calendars` | `outlook calendars` | List user's calendars (primary + shared + holiday subs). |
+
+`src/calendar.mjs` owns time-window parsing (`today`/`tomorrow`/`+7d`/
+ISO), the calendarView URL builder, and an OData filter composer for
+event-specific flags. The CLI command layer in `cli.mjs` is a thin
+wrapper that translates flags into REST calls via `runApi`.
+
 ## Future work
 
 - **Daemon mode.** Keep one Chromium process alive, expose a local socket,
   shave the ~3-second cache-miss latency to ~50ms.
-- **MCP server wrapper.** Surface `list`, `search`, `read`, `send` as
-  Model Context Protocol tools so Claude Code / other AI agents can call
-  them as first-class operations.
+- **MCP server wrapper.** Surface mail + calendar operations as Model
+  Context Protocol tools so Claude Code / other AI agents can call them
+  as first-class operations (vs. shelling out via Bash).
+- **Calendar attachments.** Currently `event-create` JSON doesn't include
+  attachment helpers — would be a small extension to `src/calendar.mjs`.
+- **`find-meeting-times`.** Outlook exposes `/me/findMeetingTimes` to
+  suggest slots when attendees are mutually free. Worth wrapping.
 - **Graph fallback.** If Microsoft fully retires the v2 endpoint, port to
-  Graph using the same Bearer (audience-bridging via a second silent token
-  acquisition in the page).
+  Graph using the same Bearer (audience-bridging via a second silent
+  token acquisition in the page).

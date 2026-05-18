@@ -121,6 +121,49 @@ Playwright launch — it's somehow trying to authenticate against a different
 client. Check that `HOME_URL` in `client.mjs` still points at
 `https://outlook.office.com/mail/`.
 
+## Calendar gotchas
+
+### "Events look like they're on the wrong day"
+
+Outlook stores event times **without a timezone offset** in `Start.DateTime`
+/ `End.DateTime` — the timezone lives in a sibling field
+(`Start.TimeZone`, e.g. `"Pacific Standard Time"`). When you read events,
+look at both fields together. When you create events, supply both:
+
+```json
+{ "Start": { "DateTime": "2026-05-25T14:00:00", "TimeZone": "America/New_York" } }
+```
+
+Don't pass an ISO string with a `Z` suffix — Outlook treats it
+literally as the wall-clock time and silently strips the offset.
+
+### "I created an event and people got invites I didn't expect"
+
+There is no "draft" workflow for events. The moment you `POST /events`
+or `PATCH /events/{id}` with an `Attendees` array, the server sends
+invitations or updates immediately. If you want a personal block
+nobody's invited to, drop the `Attendees` field entirely or set it to
+`[]`.
+
+### "Cancelled an event and got an angry message about it"
+
+`outlook event-cancel <id>` deletes the event and, if there were
+attendees, sends cancellation notices. To remove a meeting from *your*
+calendar only without notifying anyone (e.g. one declined on your
+behalf), use `decline <id> --no-respond` instead — it removes the entry
+without bothering the organiser.
+
+### "agenda returned nothing but I know I have events"
+
+`agenda` defaults to `now → now + 7 days`. If your events are in the
+past, pass `--from "-30d"`. If they're further out, pass `--days 60`.
+
+### "I want recurring master series, not instances"
+
+`agenda` uses `/calendarView` which expands recurring events. To see
+the master series (one row per recurring pattern), use `outlook events`
+instead — it queries `/events` directly.
+
 ## Inspecting state
 
 ```bash

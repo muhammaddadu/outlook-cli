@@ -86,13 +86,17 @@ src/
   auth.mjs       # token cache: load/save/clear + getAuth() cache-first wrapper
   capture.mjs    # Playwright launcher + Bearer-header capture (lazy-loaded)
   client.mjs     # pure-fetch call() helper, OUTLOOK_API_BASE override
-  odata.mjs      # buildFilter / buildQuery / resolveFolder / parseTimeArg
+  odata.mjs      # mail filter / query builders (--unread, --from, --folder, …)
+  calendar.mjs   # calendar time parsing, calendarView URL, event filters
+  learn.mjs      # persistent learnings (load/add/forget/clear)
+  jwt.mjs        # tiny JWT payload decoder (no signature validation)
   output.mjs     # printJson / debug / info / errorBlock (stdout vs stderr)
   errors.mjs     # AppError class, error codes, exit-code mapping
   paths.mjs      # XDG-compliant cache and data directories (lazy-evaluated)
   diagnose.mjs   # dev-only: sniff OWA endpoints to find new APIs
 skill/
   outlook/SKILL.md  # agent skill — installs to ~/.claude/skills/outlook/ via skill/install.mjs
+  commands/*.md     # slash commands (/outlook, /inbox, /unread, /draft, /agenda)
   install.mjs       # symlink/copy the skill into Claude / Codex / Cursor
 test/
   helpers.mjs    # mock HTTP server, fake JWT, CLI subprocess runner

@@ -92,6 +92,20 @@ unknowingly be skirting:
 | Browser profile leaked | Change your Microsoft account password. Sign out of all sessions from `https://account.microsoft.com/security`. |
 | You suspect EDR flagged you | Reach out to your security team first, don't try to delete logs. Be honest about what you did. |
 
+## Calendar safety
+
+Calendar mutations don't have a "draft" workflow. Three behaviours to be
+aware of:
+
+| Operation | Side effect | How to do it safely |
+| --- | --- | --- |
+| `event-create` with `Attendees` | Invitations **send immediately** | Confirm recipients + time + subject with the user before running. For personal blocks, omit `Attendees` entirely. |
+| `event-update` on a meeting | Update notification sent to attendees | Same — preview the patch with the user first. |
+| `event-cancel` on a meeting | Cancellation notice sent to attendees | Same — confirm before deleting. To leave a meeting without notifying anyone, use `decline <id> --no-respond` instead. |
+
+The SKILL.md tells every agent that loads it to confirm with the user
+before any of those three operations on attendee-bearing events.
+
 ## Self-learning behaviour
 
 The CLI maintains a `learnings.md` file the AI agent reads at session

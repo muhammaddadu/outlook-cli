@@ -126,6 +126,8 @@ Full explanation in [`docs/architecture.md`](./docs/architecture.md).
 | [`AGENTS.md`](./AGENTS.md) | Instructions for AI agents editing this code |
 | [`LEARNINGS.md`](./LEARNINGS.md) | Approaches that didn't work and why — read before exploring alternatives |
 | [`skill/outlook/SKILL.md`](./skill/outlook/SKILL.md) | Agent skill that teaches Claude / Codex / Cursor how to drive the CLI |
+| [`docs/PRD.md`](./docs/PRD.md) | Product Requirements Document — what this is for, who it's for, what's in / out of scope |
+| [`docs/reverse-engineering.md`](./docs/reverse-engineering.md) | How to apply the same approach to other web apps |
 
 Tests live in [`test/`](./test) and run with `npm test` (~5 seconds, no
 network, no Playwright).

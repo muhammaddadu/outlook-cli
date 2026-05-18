@@ -19,8 +19,13 @@ adds `outlook` to your `$PATH`.
 | File | Touch when |
 | --- | --- |
 | `src/cli.mjs` | Adding/removing subcommands, changing the CLI surface |
-| `src/auth.mjs` | Changing how the token cache is loaded, saved, or validated |
-| `src/client.mjs` | Adding new endpoints, changing the Bearer capture, tweaking Chromium launch |
+| `src/auth.mjs` | Token cache load/save/clear, JWT expiry decoding |
+| `src/capture.mjs` | Playwright launcher + Bearer-header capture (lazy-imported) |
+| `src/client.mjs` | Pure-fetch `call()` wrapper, `OUTLOOK_API_BASE` override |
+| `src/odata.mjs` | Mail filter / query builders (`--unread`, `--from`, `--folder`, …) |
+| `src/calendar.mjs` | Calendar time parsing, calendarView URL builder, event filters |
+| `src/learn.mjs` | Persistent learnings file (read/append/forget/clear) |
+| `src/jwt.mjs` | Tiny JWT payload decoder shared by auth + cli |
 | `src/output.mjs` | Adjusting stdout/stderr discipline or JSON formatting |
 | `src/errors.mjs` | Adding a new error code or exit code |
 | `src/paths.mjs` | Moving cache or profile directories |
