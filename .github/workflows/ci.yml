@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel an in-flight CI run for a PR when a new push lands on the same
+# branch. Saves runner minutes on rapid push-fix-push iterations.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 = current LTS minimum (engines.node), 22 = current LTS.
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - name: Run tests
+        run: npm test
+      # Cheap sanity check that the CLI itself starts up — catches
+      # import-time errors that the test suite can miss.
+      - name: Smoke-test CLI entry point
+        run: |
+          node src/cli.mjs --version
+          node src/cli.mjs --help > /dev/null
+
+  guardrails:
+    name: guardrails (secrets + tracked-credentials)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Refuse credential-shaped filenames in the tree
+        run: |
+          # These should never be tracked. They're in .gitignore but a
+          # contributor might force-add. Hard fail if any are present.
+          BAD=$(git ls-files \
+            | grep -E '(^|/)(auth(-cache)?\.json|.*\.token\.json|.*\.bearer|\.env|\.env\.[^/]+)$' \
+            | grep -v '\.example$' || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::Files matching credential patterns are tracked:"
+            echo "$BAD"
+            exit 1
+          fi
+
+      - name: Refuse JWT-shaped strings in tracked files
+        run: |
+          # Real Bearer tokens look like `Bearer eyJ…` followed by 100+
+          # base64url chars. Test fixtures use a short `test-signature`
+          # tail and never exceed ~50 chars after `ey`.
+          HITS=$(git grep -nE 'Bearer\s+eyJ[A-Za-z0-9_-]{60,}' \
+            -- '*.md' '*.mjs' '*.json' '*.yml' '*.yaml' 'src/**' 'docs/**' 'skill/**' 2>/dev/null || true)
+          if [ -n "$HITS" ]; then
+            echo "::error::Likely real JWT found in a tracked file:"
+            echo "$HITS"
+            exit 1
+          fi
+
+      - name: Refuse obvious tenant / object identifiers
+        run: |
+          # Catch the specific UUIDs that surface during local development
+          # in case anyone ever copy-pastes a debug payload into a doc.
+          # Generic UUIDs are fine; these are the ones we know are real.
+          DENYLIST='2ba9001d-d7f9-43a3-a098-6a927ac715ca|255c2968-9d39-4dda-b5ac-7d596f41668d|10030000ADB9FE10'
+          HITS=$(git grep -nE "$DENYLIST" -- ':!**/CONTRIBUTING.md' ':!**/LEARNINGS.md' 2>/dev/null || true)
+          if [ -n "$HITS" ]; then
+            echo "::error::Real tenant / OID / PUID found in tracked file:"
+            echo "$HITS"
+            exit 1
+          fi

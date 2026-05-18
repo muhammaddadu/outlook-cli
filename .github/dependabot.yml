@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Production deps + transitive.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # Patch and minor for everything ride on one PR; major bumps each
+      # get their own so the breakage surface is contained.
+      minor-and-patch:
+        update-types:
+          - patch
+          - minor
+
+  # Keep the CI workflow itself current (actions/checkout, setup-node, etc.).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
