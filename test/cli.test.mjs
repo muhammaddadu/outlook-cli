@@ -775,7 +775,7 @@ test('learn add records an observation that learn (list) reads back', async () =
   const learnings = freshLearningsPath();
   const env = { OUTLOOK_LEARNINGS: learnings };
 
-  const add = await runCli(['learn', 'add', 'Signs off as Mo'], { env });
+  const add = await runCli(['learn', 'add', 'Signs off as Sam'], { env });
   assert.equal(add.code, 0);
   assert.equal(JSON.parse(add.stdout).added, true);
 
@@ -783,13 +783,13 @@ test('learn add records an observation that learn (list) reads back', async () =
   assert.equal(list.code, 0);
   const out = JSON.parse(list.stdout);
   assert.equal(out.count, 1);
-  assert.match(out.learnings[0], /Signs off as Mo$/);
+  assert.match(out.learnings[0], /Signs off as Sam$/);
 });
 
 test('learn forget removes matching learnings', async () => {
   const learnings = freshLearningsPath();
   const env = { OUTLOOK_LEARNINGS: learnings };
-  await runCli(['learn', 'add', 'Signs off as Mo'], { env });
+  await runCli(['learn', 'add', 'Signs off as Sam'], { env });
   await runCli(['learn', 'add', 'Prefers terse replies'], { env });
   await runCli(['learn', 'add', 'Boss is alice@example.com'], { env });
 

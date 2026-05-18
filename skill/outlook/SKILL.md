@@ -22,7 +22,7 @@ session. It's free (no network, no Chromium) and returns:
   "user": { "email": "…", "name": "…", "tenant_id": "…" },
   "tokenMinutesUntilExpiry": 1408,
   "learnings": [
-    "2026-05-18 | Signs off as Mo",
+    "2026-05-18 | Signs off as Sam",
     "2026-05-18 | Prefers terse one-line replies",
     "2026-05-18 | 'the team' usually means team-eng@example.com"
   ],
@@ -40,7 +40,7 @@ When you observe something durable, non-obvious, and useful about the
 user's mail habits, append it:
 
 ```bash
-outlook learn add "Signs off as 'Mo'"
+outlook learn add "Signs off as 'Sam'"
 outlook learn add "Drafts to vendors should be HTML with the legal footer"
 outlook learn add "When user says 'my boss' they mean alice@example.com"
 ```
@@ -414,7 +414,7 @@ clearly. Do not loop trying to re-authenticate.
 
 Things worth recording with `outlook learn add "…"`:
 
-- "Signs off as 'Mo' (no full name in informal replies)"
+- "Signs off as 'Sam' (no full name in informal replies)"
 - "Prefers terse 1-2 sentence replies; only goes long for vendor / external"
 - "'The team' = team-eng@example.com (mailing list)"
 - "Boss is alice@example.com — replies to her are usually short and direct"

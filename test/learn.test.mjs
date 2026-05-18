@@ -29,15 +29,15 @@ test('loadLearnings returns [] when the file does not exist', () => {
 
 test('addLearning persists an observation; loadLearnings reads it back', () => {
   const file = isolatedLearningsFile();
-  const ok = addLearning('Signs off as Mo');
+  const ok = addLearning('Signs off as Sam');
   assert.equal(ok, true);
   const items = loadLearnings();
   assert.equal(items.length, 1);
-  assert.match(items[0], /\d{4}-\d{2}-\d{2} \| Signs off as Mo$/);
+  assert.match(items[0], /\d{4}-\d{2}-\d{2} \| Signs off as Sam$/);
   // File is human-readable markdown.
   const raw = readFileSync(file, 'utf8');
   assert.match(raw, /^# outlook-cli learnings/);
-  assert.match(raw, /- \d{4}-\d{2}-\d{2} \| Signs off as Mo/);
+  assert.match(raw, /- \d{4}-\d{2}-\d{2} \| Signs off as Sam/);
 });
 
 test('addLearning de-duplicates near-identical entries (case-insensitive)', () => {
@@ -57,14 +57,14 @@ test('addLearning ignores empty / whitespace-only input', () => {
 
 test('removeLearning deletes every line containing the substring', () => {
   isolatedLearningsFile();
-  addLearning('Signs off as Mo');
+  addLearning('Signs off as Sam');
   addLearning('Prefers terse replies');
   addLearning('Boss is alice@example.com');
-  const removed = removeLearning('mo'); // matches "Mo" + "alice" doesn't
+  const removed = removeLearning('sam'); // matches "Sam" + "alice" doesn't
   assert.equal(removed, 1);
   const items = loadLearnings();
   assert.equal(items.length, 2);
-  assert.ok(items.every((i) => !i.toLowerCase().includes(' mo')));
+  assert.ok(items.every((i) => !i.toLowerCase().includes(' sam')));
 });
 
 test('removeLearning returns 0 when nothing matches', () => {

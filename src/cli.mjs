@@ -259,7 +259,7 @@ const learn = program
   .description('Show, add, forget, or clear the agent\'s learnings about the user.\n' +
     'Examples:\n' +
     '  outlook learn                                # list all learnings\n' +
-    '  outlook learn add "Signs off as Mo"          # record an observation\n' +
+    '  outlook learn add "Signs off as Sam"         # record an observation\n' +
     '  outlook learn forget "Signs off"             # remove matching entries\n' +
     '  outlook learn clear                          # wipe the file');
 
