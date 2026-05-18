@@ -1,5 +1,9 @@
 # outlook-experiment
 
+[![CI](https://github.com/muhammaddadu/outlook-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/muhammaddadu/outlook-cli/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen)](./package.json)
+
 A local CLI that reads, searches and sends mail through your existing **Outlook
 Web (OWA) session** — no Azure AD app registration, no admin consent, no
 third-party SaaS.

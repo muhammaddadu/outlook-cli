@@ -1,0 +1,104 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Before continuing, please
+        confirm you've checked the
+        [troubleshooting guide](../blob/main/docs/troubleshooting.md) — many
+        common symptoms are documented there with a fix.
+
+        **Do not paste real captured tokens, message IDs, or full email
+        bodies.** Redact anything that looks like a credential before
+        submitting.
+
+  - type: checkboxes
+    id: prereqs
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I read `docs/troubleshooting.md` and the symptom is not covered there.
+          required: true
+        - label: I have redacted any captured tokens, message Ids, and personal data from this report.
+          required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: What you ran
+      description: Exact command. If it's a sequence, paste all of it.
+      placeholder: |
+        outlook list --unread --since 7d
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: A short description of the expected behaviour.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: |
+        Include the full output. Re-run with `--debug` if the failure
+        isn't self-explanatory (`outlook --debug list 2>&1`).
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: cli-version
+    attributes:
+      label: CLI version
+      description: Output of `outlook --version`.
+      placeholder: 0.3.0
+    validations:
+      required: true
+
+  - type: input
+    id: node-version
+    attributes:
+      label: Node version
+      description: Output of `node --version`.
+      placeholder: v20.18.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows (WSL)
+        - Windows (native — unsupported)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: tenant
+    attributes:
+      label: Tenant type
+      description: Which kind of Microsoft 365 account?
+      options:
+        - Enterprise / work account
+        - School account
+        - Personal Microsoft account
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Anything else worth knowing — Conditional Access policies, VPN, recent IT changes, etc.

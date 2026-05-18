@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Troubleshooting guide
+    url: https://github.com/muhammaddadu/outlook-cli/blob/main/docs/troubleshooting.md
+    about: Most common symptoms have a documented fix — check here before opening an issue.
+  - name: How it works (architecture)
+    url: https://github.com/muhammaddadu/outlook-cli/blob/main/docs/architecture.md
+    about: Read this if you're curious about the Bearer-capture mechanism or want to extend the CLI.
+  - name: What's in / out of scope
+    url: https://github.com/muhammaddadu/outlook-cli/blob/main/docs/PRD.md
+    about: The PRD lists explicit non-goals — please skim before filing a feature request.
+  - name: Contributing
+    url: https://github.com/muhammaddadu/outlook-cli/blob/main/CONTRIBUTING.md
+    about: How to send a PR, code style, testing requirements, security/PII rules.

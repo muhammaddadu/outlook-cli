@@ -1,0 +1,58 @@
+name: Feature request
+description: Suggest a new command, flag, or capability
+labels: [enhancement, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. Before continuing, please check whether
+        your idea is already explicitly **out of scope** in
+        [`docs/PRD.md`](../blob/main/docs/PRD.md) §3 or §7 (multi-account,
+        GUI, Gmail/IMAP, anything that needs admin consent, …). Out-of-scope
+        items will be closed with a link to that section.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: One-line summary
+      description: Imperative phrase like a commit subject.
+      placeholder: Add `outlook calendar-attachments` command
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does it solve?
+      description: What can't you do today, or what's painful about the current way?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        What does the CLI surface look like? New subcommand, new flag, new
+        output shape? Try to make it concrete enough to argue with.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        What else did you think about? Has any approach been ruled out
+        already in `LEARNINGS.md`?
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      description: Confirm this fits within the PRD.
+      options:
+        - label: This does not require Azure AD app registration or admin consent (PRD goal 1).
+        - label: This is single-user / single-account behaviour (PRD non-goal 1).
+        - label: This stays within Microsoft 365 (not Gmail / IMAP).
+        - label: I'm willing to send a PR (optional — just helps prioritise).
