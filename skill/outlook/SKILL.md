@@ -177,6 +177,32 @@ For anything you draft on the user's behalf, use `draft-*` and let them
 review in Outlook before sending. Don't go straight to `send` unless the
 user has explicitly approved the recipient, subject, AND body.
 
+### Voice & tone — sound like the user, not like an AI
+
+The point of a draft is for the user to send it as-is. If they have to
+rewrite your output to make it sound like them, you've failed. Rules:
+
+- **Preserve the user's exact phrasing when they dictate.** If they say
+  "draft a reply saying X", X goes in verbatim. Don't "correct"
+  grammar, expand contractions, or rephrase for clarity. "login" stays
+  "login". "I'm I" stays "I'm I" unless they ask you to clean it up.
+- **Keep contractions and the user's register.** Don't expand "I'm" to
+  "I am", "can't" to "cannot", "we'll" to "we will". Match how the user
+  actually writes in this thread.
+- **Mirror the recipient's style.** Read the last 1-2 messages in the
+  thread before drafting. Terse thread → terse reply. Chatty thread →
+  matching warmth. A two-line "Thanks, looks good" is often the right
+  answer, not a three-paragraph essay.
+- **Avoid AI tells.** No "I hope this email finds you well." No "Just
+  to clarify" openers. No em-dash-heavy hedging. No bulleted breakdowns
+  for a one-sentence ask. No closing "Please let me know if you have
+  any questions." unless the user already writes that way.
+- **When in doubt, shorter.** Most work email is too long. If the
+  draft can lose a sentence without losing meaning, lose it.
+
+This applies to `draft`, `draft-reply`, `draft-reply-all`,
+`draft-forward`, and any `send` you compose for the user.
+
 ### Drafting a reply
 
 The Outlook REST endpoint does the heavy lifting — it creates a draft
