@@ -733,6 +733,189 @@ test('draft-reply with malformed override JSON exits 64', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Attachments (--attach)
+
+test('draft --attach POSTs the file as a FileAttachment after creating the draft', async () => {
+  const { writeFileSync, mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'outlook-attach-'));
+  const file = join(dir, 'screenshot.png');
+  writeFileSync(file, Buffer.from('PNGDATA'));
+
+  const reqs = [];
+  const mock = await startMockServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      reqs.push({ method: req.method, url: req.url, body });
+      if (req.url.endsWith('/messages')) {
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ Id: 'DRAFT-A1', WebLink: 'https://x/?ItemID=DRAFT-A1' }));
+      } else if (req.url.endsWith('/attachments')) {
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ Id: 'ATT-1' }));
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{}');
+      }
+    });
+  });
+  try {
+    const payload = JSON.stringify({
+      Subject: 'with attachment',
+      Body: { ContentType: 'Text', Content: 'hello' },
+      ToRecipients: [{ EmailAddress: { Address: 'a@b.com' } }],
+    });
+    const { code, stdout } = await runCli(['draft', '--attach', file], {
+      env: {
+        OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+        OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+      },
+      stdin: payload,
+    });
+    assert.equal(code, 0);
+    assert.equal(reqs.length, 2);
+    assert.equal(reqs[0].url, '/api/v2.0/me/messages');
+    assert.equal(reqs[1].url, '/api/v2.0/me/messages/DRAFT-A1/attachments');
+    const att = JSON.parse(reqs[1].body);
+    assert.equal(att.Name, 'screenshot.png');
+    assert.equal(att.ContentType, 'image/png');
+    assert.equal(Buffer.from(att.ContentBytes, 'base64').toString(), 'PNGDATA');
+
+    const out = JSON.parse(stdout);
+    assert.equal(out.DraftId, 'DRAFT-A1');
+    assert.equal(out.Attachments[0].AttachmentId, 'ATT-1');
+    assert.equal(out.Attachments[0].name, 'screenshot.png');
+  } finally {
+    await mock.close();
+  }
+});
+
+test('draft-reply --attach attaches files to the createReply-produced draft', async () => {
+  const { writeFileSync, mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'outlook-attach-'));
+  const file1 = join(dir, 'a.pdf');
+  const file2 = join(dir, 'b.txt');
+  writeFileSync(file1, Buffer.from('PDF-BYTES'));
+  writeFileSync(file2, 'hello world');
+
+  const reqs = [];
+  const mock = await startMockServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      reqs.push({ method: req.method, url: req.url, body });
+      if (req.url.endsWith('/createReply')) {
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ Id: 'REPLY-A', WebLink: 'https://x' }));
+      } else if (req.url.endsWith('/attachments')) {
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ Id: `ATT-${reqs.length}` }));
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{}');
+      }
+    });
+  });
+  try {
+    const { code, stdout } = await runCli(
+      ['draft-reply', 'ORIG-1', '--attach', file1, '--attach', file2],
+      {
+        env: {
+          OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+          OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+        },
+      },
+    );
+    assert.equal(code, 0);
+    assert.equal(reqs.length, 3);
+    assert.equal(reqs[0].url, '/api/v2.0/me/messages/ORIG-1/createReply');
+    assert.equal(reqs[1].url, '/api/v2.0/me/messages/REPLY-A/attachments');
+    assert.equal(reqs[2].url, '/api/v2.0/me/messages/REPLY-A/attachments');
+    assert.equal(JSON.parse(reqs[1].body).ContentType, 'application/pdf');
+    assert.equal(JSON.parse(reqs[2].body).ContentType, 'text/plain');
+
+    const out = JSON.parse(stdout);
+    assert.equal(out.Attachments.length, 2);
+  } finally {
+    await mock.close();
+  }
+});
+
+test('send --attach embeds Attachments inline in the Message sent to /sendmail', async () => {
+  const { writeFileSync, mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'outlook-attach-'));
+  const file = join(dir, 'note.txt');
+  writeFileSync(file, 'note body');
+
+  const captured = { body: null };
+  const mock = await startMockServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      captured.body = body;
+      res.writeHead(202);
+      res.end();
+    });
+  });
+  try {
+    const payload = JSON.stringify({
+      Subject: 'with attach',
+      Body: { ContentType: 'Text', Content: 'hi' },
+      ToRecipients: [{ EmailAddress: { Address: 'a@b.com' } }],
+    });
+    const { code } = await runCli(['send', '--attach', file], {
+      env: {
+        OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+        OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+      },
+      stdin: payload,
+    });
+    assert.equal(code, 0);
+    const sent = JSON.parse(captured.body);
+    assert.equal(sent.Message.Attachments.length, 1);
+    assert.equal(sent.Message.Attachments[0].Name, 'note.txt');
+    assert.equal(sent.Message.Attachments[0].ContentType, 'text/plain');
+    assert.equal(
+      Buffer.from(sent.Message.Attachments[0].ContentBytes, 'base64').toString(),
+      'note body',
+    );
+  } finally {
+    await mock.close();
+  }
+});
+
+test('draft --attach with missing file exits 64 (E_ARGS) and does not create a draft', async () => {
+  const reqs = [];
+  const mock = await startMockServer((req, res) => {
+    reqs.push(req.url);
+    res.writeHead(201, { 'Content-Type': 'application/json' });
+    res.end('{}');
+  });
+  try {
+    const { code, stderr } = await runCli(
+      ['draft', '--attach', '/no/such/file.png'],
+      {
+        env: {
+          OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+          OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+        },
+        stdin: JSON.stringify({ Subject: 'x', Body: { Content: 'y', ContentType: 'Text' } }),
+      },
+    );
+    assert.equal(code, 64);
+    assert.match(stderr, /Attachment not found/);
+  } finally {
+    await mock.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Self-learning context
 
 test('context with no cached auth returns null user and empty learnings', async () => {

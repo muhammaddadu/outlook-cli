@@ -71,14 +71,14 @@ outlook read    <id>                 # full message JSON
 outlook folders                       # list mail folders
 
 # Drafting (review-first — preferred for AI-generated mail)
-outlook draft             <json>            # new draft (reads STDIN if no arg)
-outlook draft-reply       <id>  [json]      # draft reply to a message
-outlook draft-reply-all   <id>  [json]      # draft reply-all
-outlook draft-forward     <id>  [json]      # draft a forward
+outlook draft             <json>  [--attach <path>…]   # new draft (reads STDIN if no arg)
+outlook draft-reply       <id>  [json] [--attach <path>…]   # draft reply to a message
+outlook draft-reply-all   <id>  [json] [--attach <path>…]   # draft reply-all
+outlook draft-forward     <id>  [json] [--attach <path>…]   # draft a forward
 outlook discard-draft     <id>              # delete a draft
 
 # Sending (skips review — only after explicit user confirmation)
-outlook send                          # send mail directly (STDIN JSON)
+outlook send                       [--attach <path>…]   # send mail directly (STDIN JSON)
 
 # Lifecycle
 outlook auth                          # interactive sign-in (USER-driven only)
@@ -206,6 +206,32 @@ folder").
 Use `draft-reply-all` to address everyone on the thread, `draft-forward`
 to forward to someone new (you'll need to add `ToRecipients` in the
 override JSON).
+
+### Attaching files
+
+Pass `--attach <path>` (repeatable) on `draft`, `draft-reply`,
+`draft-reply-all`, `draft-forward`, or `send`. Files are read from the
+local filesystem, base64-encoded, and uploaded as Outlook
+`FileAttachment` resources. The cap is ~3 MB per file (Outlook
+inline-attachment ceiling); larger files need OneDrive.
+
+```bash
+# Reply with two screenshots
+outlook draft-reply "$ID" \
+  --attach ~/Pictures/screenshot1.png \
+  --attach ~/Pictures/screenshot2.png \
+  '{ "Body": { "ContentType": "Text", "Content": "See attached." } }'
+
+# Send a quick note with a PDF
+cat <<'EOF' | outlook send --attach ./report.pdf
+{ "Subject": "Q1 report", "Body": {"ContentType":"Text","Content":"Attached."},
+  "ToRecipients": [{"EmailAddress":{"Address":"boss@example.com"}}] }
+EOF
+```
+
+Bad paths fail fast with `E_ARGS` (exit 64) *before* the draft is
+created, so a typo will not leave an orphan empty draft in the user's
+mailbox.
 
 ### Drafting a new message from scratch
 

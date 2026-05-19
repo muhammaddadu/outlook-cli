@@ -35,6 +35,16 @@ import {
   learningsFile,
 } from './learn.mjs';
 import { decodePayload } from './jwt.mjs';
+import {
+  buildFileAttachment,
+  attachFilesToDraft,
+  validateAttachPath,
+} from './attachments.mjs';
+
+/** Commander collector for repeated --attach options. */
+function collectAttach(value, previous) {
+  return previous ? previous.concat([value]) : [value];
+}
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(resolve(HERE, '..', 'package.json'), 'utf8'));
@@ -634,7 +644,11 @@ program
  *
  * Returns the draft Id and the OWA WebLink (deep link the user can click).
  */
-async function makeDraftFrom(messageId, action, overridesJson) {
+async function makeDraftFrom(messageId, action, overridesJson, attachPaths = []) {
+  // Validate attachment paths BEFORE creating the draft so a bad path
+  // doesn't leave an orphan draft in the user's mailbox.
+  for (const p of attachPaths) validateAttachPath(p);
+
   const auth = await getAuth();
 
   // Parse overrides up-front so we can fail fast and split body vs non-body.
@@ -720,10 +734,17 @@ async function makeDraftFrom(messageId, action, overridesJson) {
     }
   }
 
+  // ---- 3. Attach files (if any) ----------------------------------------
+  let attached = null;
+  if (attachPaths.length > 0) {
+    attached = await attachFilesToDraft(runApi, draft.Id, attachPaths);
+  }
+
   return {
     DraftId: draft.Id,
     WebLink: draft.WebLink ?? null,
     ConversationId: draft.ConversationId ?? null,
+    Attachments: attached,
     message: 'Draft saved to your Drafts folder. Open Outlook to review and send.',
   };
 }
@@ -731,11 +752,12 @@ async function makeDraftFrom(messageId, action, overridesJson) {
 program
   .command('draft')
   .argument('[json]', 'Outlook Message JSON; reads STDIN if omitted')
+  .option('-a, --attach <path>', 'attach a local file (repeatable, ≤3MB each)', collectAttach)
   .description(
     'Create a new draft (does NOT send). Same JSON shape as `send`. The\n' +
       'draft appears in your Drafts folder for review.',
   )
-  .action(async (jsonArg) => {
+  .action(async (jsonArg, opts) => {
     const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
     if (!raw.trim()) {
       throw new AppError({
@@ -755,14 +777,24 @@ program
         cause,
       });
     }
+    // Validate attachments upfront so a bad path fails before we create
+    // an empty orphan draft.
+    if (opts.attach?.length) {
+      for (const p of opts.attach) validateAttachPath(p);
+    }
     const body = await runApi('/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(message),
     });
+    let attached = null;
+    if (opts.attach?.length) {
+      attached = await attachFilesToDraft(runApi, body.Id, opts.attach);
+    }
     printJson({
       DraftId: body.Id,
       WebLink: body.WebLink ?? null,
+      Attachments: attached,
       message: 'Draft saved to your Drafts folder. Open Outlook to review and send.',
     });
   });
@@ -774,33 +806,36 @@ program
     '[json]',
     'partial Message override (e.g. {"Body":{"ContentType":"Text","Content":"…"}}); reads STDIN if omitted',
   )
+  .option('-a, --attach <path>', 'attach a local file (repeatable, ≤3MB each)', collectAttach)
   .description(
     'Create a draft reply to a message. Outlook automatically fills in the\n' +
       'quoted thread; your override JSON sets the new body or extra recipients.',
   )
-  .action(async (id, jsonArg) => {
+  .action(async (id, jsonArg, opts) => {
     const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
-    printJson(await makeDraftFrom(id, 'createReply', raw));
+    printJson(await makeDraftFrom(id, 'createReply', raw, opts.attach ?? []));
   });
 
 program
   .command('draft-reply-all')
   .argument('<id>', 'message Id to reply-all to')
   .argument('[json]', 'partial Message override; STDIN if omitted')
+  .option('-a, --attach <path>', 'attach a local file (repeatable, ≤3MB each)', collectAttach)
   .description('Like `draft-reply`, but addresses everyone on the original thread.')
-  .action(async (id, jsonArg) => {
+  .action(async (id, jsonArg, opts) => {
     const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
-    printJson(await makeDraftFrom(id, 'createReplyAll', raw));
+    printJson(await makeDraftFrom(id, 'createReplyAll', raw, opts.attach ?? []));
   });
 
 program
   .command('draft-forward')
   .argument('<id>', 'message Id to forward')
   .argument('[json]', 'partial Message override (typically ToRecipients + Body); STDIN if omitted')
+  .option('-a, --attach <path>', 'attach a local file (repeatable, ≤3MB each)', collectAttach)
   .description('Create a draft forward of a message.')
-  .action(async (id, jsonArg) => {
+  .action(async (id, jsonArg, opts) => {
     const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
-    printJson(await makeDraftFrom(id, 'createForward', raw));
+    printJson(await makeDraftFrom(id, 'createForward', raw, opts.attach ?? []));
   });
 
 program
@@ -820,13 +855,14 @@ program
     '[json]',
     'message JSON (Outlook REST "Message" resource); reads STDIN if omitted',
   )
+  .option('-a, --attach <path>', 'attach a local file (repeatable, ≤3MB each)', collectAttach)
   .description(
     'Send a message.\n' +
       'Example STDIN payload:\n' +
       '  { "Subject": "hi", "Body": {"ContentType": "Text", "Content": "…"},\n' +
       '    "ToRecipients": [{"EmailAddress": {"Address": "x@y.com"}}] }',
   )
-  .action(async (jsonArg) => {
+  .action(async (jsonArg, opts) => {
     const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
     if (!raw.trim()) {
       throw new AppError({
@@ -845,6 +881,10 @@ program
         hint: 'Validate with `jq .` first, then retry.',
         cause,
       });
+    }
+    if (opts.attach?.length) {
+      const built = opts.attach.map(buildFileAttachment);
+      message.Attachments = [...(message.Attachments ?? []), ...built];
     }
     const body = await runApi('/sendmail', {
       method: 'POST',
