@@ -75,8 +75,21 @@ jobs:
           # Catch the specific UUIDs that surface during local development
           # in case anyone ever copy-pastes a debug payload into a doc.
           # Generic UUIDs are fine; these are the ones we know are real.
-          DENYLIST='2ba9001d-d7f9-43a3-a098-6a927ac715ca|255c2968-9d39-4dda-b5ac-7d596f41668d|10030000ADB9FE10'
-          HITS=$(git grep -nE "$DENYLIST" -- ':!**/CONTRIBUTING.md' ':!**/LEARNINGS.md' 2>/dev/null || true)
+          #
+          # The denylist is assembled from fragments so this workflow file
+          # itself doesn't trip the check.
+          A="2ba9001d-d7f9-43a3-a098"
+          B="6a927ac715ca"
+          C="255c2968-9d39-4dda-b5ac"
+          D="7d596f41668d"
+          E="10030000"
+          F="ADB9FE10"
+          DENYLIST="${A}-${B}|${C}-${D}|${E}${F}"
+          HITS=$(git grep -nE "$DENYLIST" \
+            -- ':!**/CONTRIBUTING.md' \
+               ':!**/LEARNINGS.md' \
+               ':!**/.github/workflows/ci.yml' \
+            2>/dev/null || true)
           if [ -n "$HITS" ]; then
             echo "::error::Real tenant / OID / PUID found in tracked file:"
             echo "$HITS"

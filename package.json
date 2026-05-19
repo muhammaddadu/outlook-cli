@@ -1,6 +1,6 @@
 {
   "name": "outlook-cli",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Local CLI that piggybacks on your existing Outlook Web session to read/search/send mail — no app registration, no admin consent.",
   "keywords": [
     "outlook",
@@ -26,16 +26,14 @@
   "files": [
     "src",
     "skill",
-    "scripts",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "start": "node src/cli.mjs",
-    "test": "node --test 'test/**/*.test.mjs'",
+    "test": "node --test test/*.test.mjs",
     "skill:install": "node skill/install.mjs",
-    "skill:install:project": "node skill/install.mjs --scope project",
-    "postinstall": "node scripts/postinstall.mjs"
+    "skill:install:project": "node skill/install.mjs --scope project"
   },
   "engines": {
     "node": ">=20"
