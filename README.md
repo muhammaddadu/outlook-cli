@@ -42,6 +42,7 @@ outlook unread --from boss@example.com         # unread from your boss
 outlook list --folder Sent --since 7d          # sent in the last week
 outlook search "deploy" --has-attachments      # full-text + filter
 outlook draft-reply <id> '{...}'               # AI-composed draft for review
+outlook draft-reply <id> --attach ~/file.png   # attach files to a draft or send
 
 # Calendar
 outlook agenda --days 7                        # next week
