@@ -39,7 +39,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "commander": "^13.0.0",
+    "commander": "^15.0.0",
     "playwright": "^1.49.0"
   }
 }
