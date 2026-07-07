@@ -22,6 +22,8 @@ adds `outlook` to your `$PATH`.
 | `src/auth.mjs` | Token cache load/save/clear, JWT expiry decoding |
 | `src/capture.mjs` | Playwright launcher + Bearer-header capture (lazy-imported) |
 | `src/client.mjs` | Pure-fetch `call()` wrapper, `OUTLOOK_API_BASE` override |
+| `src/resources.mjs` | Microsoft resource registry (outlook/graph/substrate): base URLs, audiences, token classification |
+| `src/audit.mjs` | `token-audit` — decode cached tokens + group scopes into capability areas (offline) |
 | `src/odata.mjs` | Mail filter / query builders (`--unread`, `--from`, `--folder`, …) |
 | `src/calendar.mjs` | Calendar time parsing, calendarView URL builder, event filters |
 | `src/learn.mjs` | Persistent learnings file (read/append/forget/clear) |
@@ -30,6 +32,7 @@ adds `outlook` to your `$PATH`.
 | `src/errors.mjs` | Adding a new error code or exit code |
 | `src/paths.mjs` | Moving cache or profile directories |
 | `src/diagnose.mjs` | Dev tool — sniff OWA endpoints. Edit when investigating new APIs |
+| `src/sniff.mjs` | Dev tool — PII-safe live capture: logs method + redacted path + token audience + JSON shape while you click, and saves per-resource tokens. Used to reverse-engineer Teams/Copilot (LEARNINGS §14) |
 
 ## Code style
 
@@ -75,7 +78,7 @@ Right now the captured Bearer is audience `https://outlook.office.com/`. If
 you want to call Graph (audience `https://graph.microsoft.com/`), you need
 a second silent acquisition.
 
-The cleanest way: in `client.mjs`'s `captureAuth()`, after the OWA Bearer is
+The cleanest way: in `capture.mjs`'s `captureAuth()`, after the OWA Bearer is
 captured, evaluate a small script in the page that triggers OWA's internal
 `acquireTokenSilent({scopes: ['https://graph.microsoft.com/.default']})`
 call — Outlook's MSAL.js instance is exposed as
@@ -106,7 +109,7 @@ Use the output to spot:
   hitting whatever replaced it.
 - **Required headers we're missing.** If a request OWA makes successfully
   has `x-foo-bar: baz` and we don't forward it, copy it into
-  `FORWARDED_HEADERS` in `client.mjs`.
+  `FORWARDED_HEADERS` in `capture.mjs`.
 - **Different bearer audiences.** Watch for requests to `graph.microsoft.com`
   or `substrate.office.com` — those use different JWTs OWA acquires
   separately.
@@ -114,7 +117,7 @@ Use the output to spot:
 ## Testing
 
 ```bash
-npm test          # all unit + integration tests, ~5s, no network, no Playwright
+npm test          # all unit + integration tests, no network, no Playwright
 ```
 
 The suite uses Node's built-in `node:test` runner — no Jest, no Vitest. It
@@ -131,10 +134,21 @@ exit-code regressions in one shot. The helpers in `test/helpers.mjs`:
 - `makeFakeJwt({ expSeconds })` — synthesise a JWT with a chosen expiry.
 - `seedTokenCache({ secondsFromNow })` — write a fake auth cache file and
   return its path; pass via `OUTLOOK_TOKEN_CACHE` env var.
+- `seedCaptureFixture({ secondsFromNow })` — write a captured-headers file
+  for the `OUTLOOK_CAPTURE_FIXTURE` seam, letting tests exercise the
+  automatic 401-recapture path without Playwright.
 - `startMockServer(handler)` — `http.createServer` on a random port, returns
   `{ url, close }`. Pass via `OUTLOOK_API_BASE` env var.
 - `runCli(args, { env, stdin, timeoutMs })` — spawn `src/cli.mjs`, return
-  `{ code, stdout, stderr }`.
+  `{ code, stdout, stderr }`. Sets `OUTLOOK_NO_CAPTURE=1` by default so no
+  test can accidentally launch Chromium.
+
+Two env seams in `auth.mjs` keep the browser out of tests:
+
+| Variable | Effect |
+| --- | --- |
+| `OUTLOOK_NO_CAPTURE=1` | Any code path that would launch Chromium throws `E_AUTH_REQUIRED` instead |
+| `OUTLOOK_CAPTURE_FIXTURE=/path` | "Capture" returns the headers JSON in that file — simulates a successful browser run |
 
 ### Adding a test for a new command
 

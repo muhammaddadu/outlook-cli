@@ -10,18 +10,22 @@
 //   - Errors carry trackable codes (E_AUTH_*, E_HTTP, E_ARGS) + actionable hints.
 //   - STDIN: `send` accepts message JSON via STDIN when no arg is given.
 
-import { Command } from 'commander';
+import { Command, CommanderError } from 'commander';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
-import { getAuth, saveAuth, clearAuth, loadCachedAuth } from './auth.mjs';
-import { captureAuth } from './capture.mjs';
+// NOTE: capture.mjs (and with it Playwright) must never be imported
+// statically here — auth.mjs lazy-loads it only when a browser is really
+// needed, so cache-hit commands start fast.
+import { getAuth, clearAuth, loadCachedAuth, refreshAuth } from './auth.mjs';
 import { call } from './client.mjs';
 import { printJson, info, errorBlock, debug } from './output.mjs';
 import { AppError, E, EXIT, exitCodeFor } from './errors.mjs';
-import { buildFilter, buildQuery, resolveFolder } from './odata.mjs';
+import { buildFilter, buildQuery, resolveFolder, parseCount } from './odata.mjs';
+import { RESOURCES } from './resources.mjs';
+import { auditAll } from './audit.mjs';
 import {
   resolveEventRange,
   calendarViewPath,
@@ -97,30 +101,62 @@ process.on('SIGINT', () => onSignal('SIGINT'));
 process.on('SIGTERM', () => onSignal('SIGTERM'));
 
 // ---------------------------------------------------------------------------
-// Shared helper
+// Shared helpers
 
+/** Human-readable summary of an HTTP error body for the error hint. */
+function httpErrorHint(body) {
+  // Outlook errors follow the OData shape { error: { code, message } } —
+  // surface just that instead of a wall of JSON when we can.
+  const err = body?.error;
+  if (err?.message) return err.code ? `${err.code}: ${err.message}` : err.message;
+  return typeof body === 'object'
+    ? JSON.stringify(body).slice(0, 500)
+    : String(body).slice(0, 500);
+}
+
+function httpError(res, method, path) {
+  return new AppError({
+    code: E.HTTP,
+    message: `${method} ${path.split('?')[0]} returned HTTP ${res.status}.`,
+    hint: httpErrorHint(res.body),
+  });
+}
+
+/**
+ * Authenticated API call with automatic 401 recovery: if the cached token
+ * is rejected server-side (revoked, CA policy change) we clear it, capture
+ * a fresh one, and retry the request once before giving up. Transient
+ * network/throttling retries live one level down, in client.call().
+ *
+ * `init.resource` selects which Microsoft API + token to use (default
+ * "outlook"). For non-default resources, getAuth() will not silently open
+ * the browser — it errors with a `outlook auth --all` hint instead — so a
+ * `graph` call never pops Chromium unexpectedly.
+ */
 async function runApi(path, init = {}) {
-  const auth = await getAuth();
-  const res = await call(auth, path, init);
+  const method = init.method ?? 'GET';
+  const res_ = init.resource ?? 'outlook';
+  let auth = await getAuth({ resource: res_ });
+  let res = await call(auth, path, init);
 
   if (res.status === 401) {
-    clearAuth();
-    throw new AppError({
-      code: E.AUTH_REQUIRED,
-      message: 'API returned 401; cached token was rejected.',
-      hint: 'Re-run the same command — the cache has been cleared and a fresh token will be captured.',
-    });
+    debug(`cached ${res_} token rejected (401); recapturing and retrying`);
+    clearAuth(res_);
+    auth = await getAuth({ resource: res_ });
+    res = await call(auth, path, init);
+    if (res.status === 401) {
+      clearAuth(res_);
+      throw new AppError({
+        code: E.AUTH_REQUIRED,
+        message: `API rejected a freshly captured ${res_} token (HTTP 401).`,
+        hint:
+          res_ === 'outlook'
+            ? 'Run `outlook auth` to sign in interactively — your session may need MFA or a policy step-up.'
+            : `Run \`outlook auth --all\` to re-capture a ${res_} token — your session may need MFA or a policy step-up.`,
+      });
+    }
   }
-  if (res.status >= 400) {
-    throw new AppError({
-      code: E.HTTP,
-      message: `API returned HTTP ${res.status}.`,
-      hint:
-        typeof res.body === 'object'
-          ? JSON.stringify(res.body)
-          : String(res.body).slice(0, 500),
-    });
-  }
+  if (res.status >= 400) throw httpError(res, method, path);
   return res.body;
 }
 
@@ -134,10 +170,42 @@ async function readStdin() {
   });
 }
 
+/**
+ * Resolve a command's JSON payload from its optional argument or STDIN,
+ * then parse it. Every mutating command (send/draft/event-*) shares these
+ * exact semantics and error messages.
+ */
+async function readJsonPayload(jsonArg, what) {
+  const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
+  if (!raw.trim()) {
+    throw new AppError({
+      code: E.ARGS,
+      message: `No ${what} JSON provided.`,
+      hint: 'Pass JSON as an argument or pipe it via STDIN.',
+    });
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (cause) {
+    throw new AppError({
+      code: E.ARGS,
+      message: `${what[0].toUpperCase()}${what.slice(1)} payload was not valid JSON.`,
+      hint: 'Validate with `jq .` first, then retry.',
+      cause,
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // CLI surface
 
 const program = new Command();
+
+// Route commander's own exits through our exit-code scheme: usage mistakes
+// (unknown option, missing argument) land on EXIT.USAGE like every other
+// bad-input error, while --help / --version stay 0. Must be set before the
+// subcommands are created — they copy this setting at creation time.
+program.exitOverride();
 
 program
   .name('outlook')
@@ -205,21 +273,184 @@ program
   .command('auth')
   .description(
     'Interactive sign-in. Opens a Chromium window pointed at OWA; waits up\n' +
-      'to 10 minutes for you to complete SSO + MFA; caches the Bearer token.',
+      'to 10 minutes for you to complete SSO + MFA; caches the Bearer token.\n' +
+      'With --all it also opens Teams + Copilot and captures a token per\n' +
+      'Microsoft resource (Graph, Substrate) in the same session.',
   )
-  .action(async () => {
-    const auth = await captureAuth({ timeoutMs: 10 * 60 * 1000 });
-    saveAuth(auth);
-    info('Signed in. Token cached.');
+  .option('--all', 'capture tokens for every reachable resource (Graph, Substrate), not just Outlook')
+  .action(async (opts) => {
+    await refreshAuth({
+      timeoutMs: 10 * 60 * 1000,
+      interactive: true,
+      waitForAll: !!opts.all,
+      openExtraSurfaces: !!opts.all,
+    });
+    info(opts.all ? 'Signed in. Tokens cached. Run `outlook token-audit` to see what you can reach.' : 'Signed in. Token cached.');
   });
 
 program
   .command('refresh')
-  .description('Force-refresh the cached Bearer token (opens OWA briefly).')
-  .action(async () => {
-    const auth = await captureAuth();
-    saveAuth(auth);
+  .description('Force-refresh the cached Bearer token(s) (opens the browser briefly).')
+  .option('--all', 'refresh every resource token, not just Outlook')
+  .action(async (opts) => {
+    await refreshAuth({ waitForAll: !!opts.all, openExtraSurfaces: !!opts.all });
     info('Token refreshed.');
+  });
+
+program
+  .command('token-audit')
+  .description(
+    'Report which Microsoft resources you can reach (Outlook, Graph,\n' +
+      'Substrate) and what each cached token is scoped for. Decodes tokens\n' +
+      'locally — no network, no browser. Use this to see whether Teams /\n' +
+      'Copilot / Graph access is available before calling those commands.',
+  )
+  .action(() => {
+    printJson(auditAll());
+  });
+
+// ---------------------------------------------------------------------------
+// Cross-resource passthrough. Graph (and Substrate) speak a different base
+// URL + token audience than Outlook REST; `graph` is a thin authenticated
+// proxy so new endpoints can be exercised without a bespoke subcommand each.
+
+program
+  .command('graph')
+  .argument('<path>', 'Graph path, e.g. "/me", "/me/chats?$top=10", "/me/joinedTeams"')
+  .argument('[json]', 'request body for POST/PATCH/PUT; reads STDIN if omitted')
+  .option('-X, --method <verb>', 'HTTP method (GET, POST, PATCH, PUT, DELETE)', 'GET')
+  .option('--resource <name>', `target resource: ${Object.keys(RESOURCES).join(' | ')}`, 'graph')
+  .description(
+    'Authenticated passthrough to Microsoft Graph (or another resource via\n' +
+      '--resource). Requires a token for that resource: run `outlook auth --all`\n' +
+      'first, then `outlook token-audit` to confirm it was captured.',
+  )
+  .action(async (path, jsonArg, opts) => {
+    if (!RESOURCES[opts.resource]) {
+      throw new AppError({
+        code: E.ARGS,
+        message: `Unknown --resource: ${opts.resource}`,
+        hint: `Choose one of: ${Object.keys(RESOURCES).join(', ')}.`,
+      });
+    }
+    const method = opts.method.toUpperCase();
+    const init = { method, resource: opts.resource };
+    if (method !== 'GET' && method !== 'DELETE') {
+      // Body is optional (some Graph actions take none); only attach if given.
+      const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
+      if (raw.trim()) {
+        let body;
+        try {
+          body = JSON.parse(raw);
+        } catch (cause) {
+          throw new AppError({
+            code: E.ARGS,
+            message: 'Request payload was not valid JSON.',
+            hint: 'Validate with `jq .` first, then retry.',
+            cause,
+          });
+        }
+        init.headers = { 'Content-Type': 'application/json' };
+        init.body = JSON.stringify(body);
+      }
+    }
+    const p = path.startsWith('/') ? path : `/${path}`;
+    const body = await runApi(p, init);
+    printJson(body ?? { ok: true });
+  });
+
+// ---------------------------------------------------------------------------
+// Microsoft Teams (via Graph). Friendly verbs over the documented Graph
+// endpoints, all using the captured graph-audience token (run
+// `outlook auth --all` first). Reachability of each depends on the scopes
+// your token carries — reads that need Chat.Read may 403 in tenants that
+// only grant Chat.ReadBasic; the error hint says which scope is missing.
+
+const gget = (path) => runApi(path, { resource: 'graph' });
+
+program
+  .command('teams')
+  .description('List the Teams you belong to (Graph /me/joinedTeams).')
+  .action(async () => {
+    printJson(await gget('/me/joinedTeams?$select=id,displayName,description'));
+  });
+
+program
+  .command('teams-channels')
+  .argument('<teamId>', 'team Id (from `outlook teams`)')
+  .description('List channels in a team (Graph /teams/{id}/channels).')
+  .action(async (teamId) => {
+    printJson(
+      await gget(
+        `/teams/${encodeURIComponent(teamId)}/channels?$select=id,displayName,description,membershipType`,
+      ),
+    );
+  });
+
+program
+  .command('teams-chats')
+  .description('List your Teams chats (1:1 and group) — Graph /me/chats.')
+  .option('-n, --top <count>', 'how many chats to fetch', '20')
+  .action(async (opts) => {
+    const top = parseCount(opts.top, '--top');
+    printJson(
+      await gget(
+        `/me/chats?$top=${top}&$select=id,topic,chatType,lastUpdatedDateTime`,
+      ),
+    );
+  });
+
+program
+  .command('teams-members')
+  .argument('<chatId>', 'chat Id (from `outlook teams-chats`)')
+  .description('List members of a Teams chat (Graph /chats/{id}/members).')
+  .action(async (chatId) => {
+    printJson(await gget(`/chats/${encodeURIComponent(chatId)}/members`));
+  });
+
+program
+  .command('teams-messages')
+  .argument('<chatId>', 'chat Id (from `outlook teams-chats`)')
+  .option('-n, --top <count>', 'how many messages to fetch', '20')
+  .description(
+    'Read messages in a Teams chat (Graph /chats/{id}/messages).\n' +
+      'Requires a token with Chat.Read; tenants granting only Chat.ReadBasic\n' +
+      'will get a 403 with a scope hint (the Teams web client reads messages\n' +
+      'via a separate, undocumented service).',
+  )
+  .action(async (chatId, opts) => {
+    const top = parseCount(opts.top, '--top');
+    printJson(await gget(`/chats/${encodeURIComponent(chatId)}/messages?$top=${top}`));
+  });
+
+program
+  .command('teams-send')
+  .argument('<chatId>', 'chat Id to post into (from `outlook teams-chats`)')
+  .argument('[text]', 'message text; reads STDIN if omitted')
+  .option('--html', 'send the text as HTML instead of plain text')
+  .description(
+    'Post a message to a Teams chat (Graph /chats/{id}/messages).\n' +
+      '**Sends immediately** — confirm the chat + text with the user first,\n' +
+      'the same as `send` for email. Requires ChatMessage.Send.',
+  )
+  .action(async (chatId, text, opts) => {
+    const content = (text ?? (process.stdin.isTTY ? '' : await readStdin())).trim();
+    if (!content) {
+      throw new AppError({
+        code: E.ARGS,
+        message: 'No message text provided.',
+        hint: 'Pass the text as an argument or pipe it via STDIN.',
+      });
+    }
+    const body = await runApi(`/chats/${encodeURIComponent(chatId)}/messages`, {
+      resource: 'graph',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        body: { contentType: opts.html ? 'html' : 'text', content },
+      }),
+    });
+    printJson({ sent: true, MessageId: body?.id ?? null, ChatId: chatId });
   });
 
 // ---------------------------------------------------------------------------
@@ -424,25 +655,7 @@ program
       'Outlook after review.',
   )
   .action(async (jsonArg) => {
-    const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
-    if (!raw.trim()) {
-      throw new AppError({
-        code: E.ARGS,
-        message: 'No event JSON provided.',
-        hint: 'Pass JSON as an argument or pipe it via STDIN.',
-      });
-    }
-    let message;
-    try {
-      message = JSON.parse(raw);
-    } catch (cause) {
-      throw new AppError({
-        code: E.ARGS,
-        message: 'Event payload was not valid JSON.',
-        hint: 'Validate with `jq .` first, then retry.',
-        cause,
-      });
-    }
+    const message = await readJsonPayload(jsonArg, 'event');
     const body = await runApi('/events', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -461,25 +674,7 @@ program
       'usually sent.',
   )
   .action(async (id, jsonArg) => {
-    const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
-    if (!raw.trim()) {
-      throw new AppError({
-        code: E.ARGS,
-        message: 'No override JSON provided.',
-        hint: 'Pass JSON as an argument or pipe it via STDIN.',
-      });
-    }
-    let patch;
-    try {
-      patch = JSON.parse(raw);
-    } catch (cause) {
-      throw new AppError({
-        code: E.ARGS,
-        message: 'Override payload was not valid JSON.',
-        hint: 'Validate with `jq .` first, then retry.',
-        cause,
-      });
-    }
+    const patch = await readJsonPayload(jsonArg, 'override');
     const body = await runApi(`/events/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -544,7 +739,7 @@ program
         Schedules: emails,
         StartTime: { DateTime: start.toISOString(), TimeZone: 'UTC' },
         EndTime: { DateTime: end.toISOString(), TimeZone: 'UTC' },
-        AvailabilityViewInterval: Number(opts.interval),
+        AvailabilityViewInterval: parseCount(opts.interval, '--interval'),
       }),
     });
     printJson(body);
@@ -601,14 +796,16 @@ withListOptions(
   printJson(body);
 });
 
-program
-  .command('unread')
-  .description('Shortcut for `list --unread`.')
-  .option('-n, --top <count>', 'how many messages to fetch', '25')
-  .action(async (opts) => {
-    const body = await runApi(messagesPath({ ...opts, unread: true }));
-    printJson(body);
-  });
+withListOptions(
+  program
+    .command('unread')
+    .description('Shortcut for `list --unread`. Accepts the same filters as `list`.'),
+).action(async (opts, cmd) => {
+  // Same surface as `list`, but unread-only and a larger default page.
+  const top = cmd.getOptionValueSource('top') === 'default' ? '25' : opts.top;
+  const body = await runApi(messagesPath({ ...opts, top, unread: true }));
+  printJson(body);
+});
 
 program
   .command('read')
@@ -649,8 +846,6 @@ async function makeDraftFrom(messageId, action, overridesJson, attachPaths = [])
   // doesn't leave an orphan draft in the user's mailbox.
   for (const p of attachPaths) validateAttachPath(p);
 
-  const auth = await getAuth();
-
   // Parse overrides up-front so we can fail fast and split body vs non-body.
   let overrides = null;
   if (overridesJson?.trim()) {
@@ -686,52 +881,18 @@ async function makeDraftFrom(messageId, action, overridesJson, attachPaths = [])
     createInit.headers = { 'Content-Type': 'application/json' };
     createInit.body = JSON.stringify({ Comment: bodyComment });
   }
-  const create = await call(
-    auth,
+  const draft = await runApi(
     `/messages/${encodeURIComponent(messageId)}/${action}`,
     createInit,
   );
-  if (create.status === 401) {
-    clearAuth();
-    throw new AppError({
-      code: E.AUTH_REQUIRED,
-      message: 'API returned 401; cached token was rejected.',
-      hint: 'Re-run the same command.',
-    });
-  }
-  if (create.status >= 400) {
-    throw new AppError({
-      code: E.HTTP,
-      message: `${action} returned HTTP ${create.status}.`,
-      hint:
-        typeof create.body === 'object'
-          ? JSON.stringify(create.body)
-          : String(create.body).slice(0, 500),
-    });
-  }
-  const draft = create.body;
 
   // ---- 2. PATCH non-body overrides (CcRecipients, Subject, etc.) --------
   if (nonBodyOverrides) {
-    const patch = await call(
-      auth,
-      `/messages/${encodeURIComponent(draft.Id)}`,
-      {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(nonBodyOverrides),
-      },
-    );
-    if (patch.status >= 400) {
-      throw new AppError({
-        code: E.HTTP,
-        message: `PATCH on draft returned HTTP ${patch.status}.`,
-        hint:
-          typeof patch.body === 'object'
-            ? JSON.stringify(patch.body)
-            : String(patch.body).slice(0, 500),
-      });
-    }
+    await runApi(`/messages/${encodeURIComponent(draft.Id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nonBodyOverrides),
+    });
   }
 
   // ---- 3. Attach files (if any) ----------------------------------------
@@ -758,25 +919,7 @@ program
       'draft appears in your Drafts folder for review.',
   )
   .action(async (jsonArg, opts) => {
-    const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
-    if (!raw.trim()) {
-      throw new AppError({
-        code: E.ARGS,
-        message: 'No message JSON provided.',
-        hint: 'Pass JSON as an argument or pipe it via STDIN.',
-      });
-    }
-    let message;
-    try {
-      message = JSON.parse(raw);
-    } catch (cause) {
-      throw new AppError({
-        code: E.ARGS,
-        message: 'Message payload was not valid JSON.',
-        hint: 'Validate with `jq .` first, then retry.',
-        cause,
-      });
-    }
+    const message = await readJsonPayload(jsonArg, 'message');
     // Validate attachments upfront so a bad path fails before we create
     // an empty orphan draft.
     if (opts.attach?.length) {
@@ -863,25 +1006,7 @@ program
       '    "ToRecipients": [{"EmailAddress": {"Address": "x@y.com"}}] }',
   )
   .action(async (jsonArg, opts) => {
-    const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
-    if (!raw.trim()) {
-      throw new AppError({
-        code: E.ARGS,
-        message: 'No message JSON provided.',
-        hint: 'Pass JSON as an argument or pipe it via STDIN (see `outlook send --help`).',
-      });
-    }
-    let message;
-    try {
-      message = JSON.parse(raw);
-    } catch (cause) {
-      throw new AppError({
-        code: E.ARGS,
-        message: 'Message payload was not valid JSON.',
-        hint: 'Validate with `jq .` first, then retry.',
-        cause,
-      });
-    }
+    const message = await readJsonPayload(jsonArg, 'message');
     if (opts.attach?.length) {
       const built = opts.attach.map(buildFileAttachment);
       message.Attachments = [...(message.Attachments ?? []), ...built];
@@ -901,6 +1026,10 @@ program
 try {
   await program.parseAsync(process.argv);
 } catch (e) {
+  if (e instanceof CommanderError) {
+    // Commander has already printed its message to the right stream.
+    process.exit(e.exitCode === 0 ? EXIT.OK : EXIT.USAGE);
+  }
   if (e instanceof AppError) {
     errorBlock(e.code, e.message, e.hint);
   } else {

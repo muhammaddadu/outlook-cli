@@ -20,6 +20,20 @@ profile, watching the network for the first authed request, and snapshotting
 the `Authorization` + routing headers to disk. Subsequent CLI calls reuse
 the cached headers from Node `fetch` without re-opening the browser.
 
+## Multiple resources (Outlook / Graph / Substrate)
+
+Each Microsoft API is a separate OAuth resource with its own token audience;
+a token is only valid against its own resource. `resources.mjs` is the
+registry. Tokens are captured per-resource (`captureAllTokens` classifies
+every Bearer OWA/Teams/Copilot emit by audience), cached per-resource
+(`auth-<resource>.json`), and routed per-resource (`call(auth, path, {
+resource })`, `getAuth({ resource })`). `outlook graph <path>` is the generic
+Graph passthrough; `outlook token-audit` reports what's reachable. Reaching
+Teams/Copilot is a *capture* problem (get the right-audience token), **not** a
+consent problem — see [`LEARNINGS.md`](./LEARNINGS.md) §13. Non-default
+resources never auto-launch the browser mid-command; they error toward `auth
+--all`.
+
 ## TL;DR — hard constraints you must respect
 
 1. **Never add OAuth flows that require admin consent.** The whole point of
@@ -66,7 +80,7 @@ Both honour `$XDG_DATA_HOME` / `$XDG_CACHE_HOME` and the per-path overrides
 ./src/cli.mjs list -n 3         # smoke test — should return JSON inbox
 ./src/cli.mjs --debug list      # verbose diagnostics on stderr
 node src/diagnose.mjs           # sniff OWA endpoints (dev tool)
-npm test                        # 29 unit + integration tests, <5s
+npm test                        # full unit + integration suite, no network
 ```
 
 The test suite lives in `test/` and uses Node's built-in `node:test`
@@ -88,12 +102,15 @@ src/
   client.mjs     # pure-fetch call() helper, OUTLOOK_API_BASE override
   odata.mjs      # mail filter / query builders (--unread, --from, --folder, …)
   calendar.mjs   # calendar time parsing, calendarView URL, event filters
+  resources.mjs  # registry of Microsoft resources (outlook/graph/substrate): base URL, audiences, classification
+  audit.mjs      # token-audit: decode cached tokens + group scopes into capability areas (offline)
   learn.mjs      # persistent learnings (load/add/forget/clear)
   jwt.mjs        # tiny JWT payload decoder (no signature validation)
   output.mjs     # printJson / debug / info / errorBlock (stdout vs stderr)
   errors.mjs     # AppError class, error codes, exit-code mapping
-  paths.mjs      # XDG-compliant cache and data directories (lazy-evaluated)
+  paths.mjs      # XDG-compliant cache and data directories (lazy-evaluated); per-resource cache files
   diagnose.mjs   # dev-only: sniff OWA endpoints to find new APIs
+  sniff.mjs      # dev-only: PII-safe live capture — logs method+path+audience+JSON shape while you click; saves per-resource tokens
 skill/
   outlook/SKILL.md  # agent skill — installs to ~/.claude/skills/outlook/ via skill/install.mjs
   commands/*.md     # slash commands (/outlook, /inbox, /unread, /draft, /agenda)
@@ -104,9 +121,11 @@ test/
 ```
 
 Touch `cli.mjs` to add a subcommand. Touch `client.mjs` when extending what
-the CLI does with the captured headers (new endpoints, new HTTP verbs).
-Touch `auth.mjs` only for cache-lifecycle changes — the capture mechanism
-itself lives in `client.mjs`.
+the CLI does with the captured headers (new endpoints, new HTTP verbs,
+retry/timeout policy). Touch `auth.mjs` only for cache-lifecycle changes —
+the capture mechanism itself lives in `capture.mjs`, which must only ever
+be imported lazily (it drags in Playwright; a static import from `cli.mjs`
+slows down every command).
 
 ---
 
@@ -122,8 +141,11 @@ itself lives in `client.mjs`.
   constants in `errors.mjs`) and an actionable `hint`. Map new failure modes
   to a code and add it to the table in `docs/troubleshooting.md`.
 - **Exit codes follow `EXIT.*`** in `errors.mjs`: 0 OK, 1 generic, 2 auth, 3
-  HTTP, 64 usage, 130 SIGINT. Don't invent new ones without updating the
-  docs.
+  HTTP/network, 64 usage, 130 SIGINT. Don't invent new ones without updating
+  the docs.
+- **Recovery is automatic where safe.** A 401 clears the cache, recaptures
+  once, and retries; 429/503 retry with `Retry-After` backoff; network
+  errors retry GETs only. Don't add per-command retry loops on top of this.
 - **Dependencies stay minimal.** Right now only `commander` and `playwright`.
   Adding a dep requires a clear justification (writing your own would be
   significant work).
@@ -173,7 +195,7 @@ to the skill landed, the agent should drive the new behaviour correctly.
 
 If you're producing a patch:
 
-- [ ] `npm test` is green (29 tests, < 5 s).
+- [ ] `npm test` is green.
 - [ ] `./src/cli.mjs list -n 3` returns HTTP 200 against a live mailbox.
 - [ ] `./src/cli.mjs --help` and `./src/cli.mjs --version` still work.
 - [ ] Any new error path throws an `AppError` with a `code` and `hint`.

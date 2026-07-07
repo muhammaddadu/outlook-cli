@@ -27,6 +27,18 @@ export function cacheDir() {
 export function profileDir() {
   return process.env.OUTLOOK_PROFILE ?? resolve(dataDir(), 'browser-profile');
 }
-export function tokenCacheFile() {
-  return process.env.OUTLOOK_TOKEN_CACHE ?? resolve(cacheDir(), 'auth.json');
+
+/**
+ * Cache file for a resource's captured headers. The default resource
+ * ("outlook") keeps the original `auth.json` path — and still honours
+ * `OUTLOOK_TOKEN_CACHE` — so the mail CLI and its tests are unaffected.
+ * Extra resources (graph, substrate) sit next to it as `auth-<resource>.json`,
+ * or are pinned individually via `OUTLOOK_TOKEN_CACHE_<RESOURCE>`.
+ */
+export function tokenCacheFile(resource = 'outlook') {
+  if (resource === 'outlook') {
+    return process.env.OUTLOOK_TOKEN_CACHE ?? resolve(cacheDir(), 'auth.json');
+  }
+  const override = process.env[`OUTLOOK_TOKEN_CACHE_${resource.toUpperCase()}`];
+  return override ?? resolve(cacheDir(), `auth-${resource}.json`);
 }

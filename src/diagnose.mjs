@@ -3,7 +3,7 @@
 // endpoints it actually calls. This tells us which URL pattern + headers to
 // replay in outlook.mjs.
 
-import { openContext, HOME_URL } from './client.mjs';
+import { openContext, HOME_URL } from './capture.mjs';
 
 const context = await openContext({ headless: false });
 const page = await context.newPage();

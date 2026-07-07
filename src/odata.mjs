@@ -79,6 +79,23 @@ function escapeODataString(s) {
 }
 
 /**
+ * Validate a count-like CLI value (`--top`, `--skip`, `--interval`) into a
+ * non-negative integer. Catching this locally turns a cryptic server 400
+ * into an immediate E_ARGS with the flag name in the message.
+ */
+export function parseCount(value, flag) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new AppError({
+      code: E.ARGS,
+      message: `Invalid ${flag}: ${value}`,
+      hint: `${flag} must be a non-negative integer.`,
+    });
+  }
+  return n;
+}
+
+/**
  * Compose an OData `$filter` expression from a set of friendly flags.
  * Returns `null` when no filter clauses apply.
  *
@@ -158,8 +175,8 @@ export function buildQuery({
   const parts = [];
   const add = (key, value) => parts.push(`${key}=${encodeURIComponent(value)}`);
 
-  if (top !== undefined && top !== null) add('$top', top);
-  if (skip !== undefined && skip !== null) add('$skip', skip);
+  if (top !== undefined && top !== null) add('$top', parseCount(top, '--top'));
+  if (skip !== undefined && skip !== null) add('$skip', parseCount(skip, '--skip'));
   if (filter) add('$filter', filter);
   if (select) add('$select', select);
   if (search) {

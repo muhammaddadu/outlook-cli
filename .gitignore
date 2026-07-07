@@ -13,9 +13,11 @@ node_modules/
 
 # ─── Captured credentials ────────────────────────────────────────────────────
 # Defense in depth: if anything that looks like a token cache ever lands in
-# the repo by mistake, Git will refuse to stage it.
+# the repo by mistake, Git will refuse to stage it. `auth-*.json` covers the
+# per-resource caches (auth-graph.json, auth-substrate.json, …).
 auth-cache.json
 auth.json
+auth-*.json
 *.token.json
 *.bearer
 .env

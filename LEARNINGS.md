@@ -246,6 +246,98 @@ This is the architecture currently in `src/`.
 
 ---
 
+## 13. Reaching Graph / Teams / Copilot — the audience wall, and how it differs from the consent wall
+
+**Question:** the OWA-captured token has a huge scope list — `Chat.ReadWrite.All`,
+`Channel.*`, `Team.ReadBasic.All`, `Files.ReadWrite.All`,
+`OutlookCopilot-Internal.ReadWrite`, `SubstrateSearch-Internal.ReadWrite`.
+Can we use it to call Microsoft Graph and drive Teams / Copilot?
+
+**Finding:** Not with *that* token. Its `aud` is `https://outlook.office.com`.
+Every Microsoft API validates the token audience and rejects a foreign one
+with `401 InvalidAuthenticationToken` — a Graph call with an Outlook-audience
+token fails regardless of scopes. (We confirmed the audience from the JWT
+directly; a live probe was inconclusive only because the cached token had
+expired.)
+
+**But this is NOT the §1–4 consent wall.** Those dead ends were about
+`Mail.*` requiring *admin consent* that the tenant refuses to grant. Here the
+scopes are **already consented** to the "One Outlook Web" first-party app
+(appid `9199bf20-…`). The blocker is purely the token audience, which is a
+capture problem, not a consent problem.
+
+**Approach:** the §12 wire-capture mechanism generalises. Each resource
+(Graph, Substrate) has its own audience; driving the web app that mints that
+token (Teams web → Graph + Teams tokens; the M365 Copilot surface →
+Substrate tokens) lets us capture it the same way. Implemented as:
+
+- `src/resources.mjs` — resource registry (base URL + audiences + host).
+- `captureAllTokens()` in `capture.mjs` — classifies every Bearer seen by
+  audience and keeps one header set per resource; `auth --all` opens
+  Teams/Copilot tabs (best-effort) so their tokens get minted in one session.
+- Per-resource token cache (`auth-<resource>.json`), `getAuth({resource})`.
+- `outlook token-audit` — decodes cached tokens offline and reports audience
+  + grouped scopes + which resources are reachable.
+- `outlook graph <path>` — authenticated passthrough to Graph (or `--resource
+  substrate`).
+
+**Resolved (§14):** a live `auth --all` in the target tenant *does* emit
+Graph + Substrate tokens. Teams-via-Graph works; Copilot does not (streaming).
+
+---
+
+## 14. Live reverse-engineering of Teams + Copilot (what `sniff.mjs` found)
+
+Ran `src/sniff.mjs` (headed browser + PII-safe network sniffer — logs method
++ redacted path + token audience + JSON *shape*, never values/bodies) while
+signing in and clicking through Teams and Copilot. Findings:
+
+**Tokens the OWA/Teams/Copilot session mints (all captured live):**
+- `https://outlook.office.com` — mail/calendar (the original).
+- `https://graph.microsoft.com` — **Graph works.** Teams-via-Graph is real.
+- `https://substrate.office.com` and sub-audiences `…/search` and
+  `…/sydney` — Substrate. `…/sydney` is the Copilot ("Sydney") backend.
+- Unmodelled: `https://ic3.teams.office.com`, `https://presence.teams.microsoft.com`
+  — Teams real-time services (see below).
+
+**Teams — what the captured Graph token can and can't do.** The Graph token's
+scopes were `Chat.ReadBasic`, `ChatMessage.Send`, `Team.ReadBasic.All`,
+`Channel.ReadBasic.All`, `User.Read.All`, … but **not** `Chat.Read` /
+`ChannelMessage.Read.All`. So, verified live:
+- ✅ `/me/joinedTeams`, `/teams/{id}/channels`, `/me/chats`,
+  `/chats/{id}/members` — list/metadata work.
+- ✅ `/chats/{id}/messages` POST — sending works (ChatMessage.Send).
+- ❌ `/chats/{id}/messages` GET — **403**, "requires one of 'Chat.Read,
+  Chat.ReadWrite'". Reading message *bodies* is not available from this token.
+
+The Teams **web client doesn't read messages via Graph at all** — it uses the
+undocumented chat-aggregator service:
+`GET teams.microsoft.com/api/chatsvc/amer/v1/users/ME/conversations/{id}/messages`,
+authenticated with a **skype token** (`Authentication: skypetoken=…`, not a
+Bearer). Reading Teams messages programmatically therefore needs either a
+broader-scoped Graph token (tenant won't grant Chat.Read here — cf. §2) or the
+skypetoken + chatsvc path. Deferred.
+
+**Copilot is a streaming protocol, not a REST call.** The conversation
+endpoint is `POST m365.cloud.microsoft/chat` — observed 8× with **no request
+body** (WebSocket/SSE upgrade; BizChat streams tokens). There is no simple
+JSON request/response to wrap. A `copilot` command needs a real streaming
+client (WS frames, which `sniff.mjs` does not capture) — a separate project.
+The one plain read endpoint, `substrate.office.com/m365Copilot/GetGptList`,
+needs the `…/sydney`-audience token specifically.
+
+**Substrate/Graph tokens are short-lived** (minutes, not the ~24h of the
+Outlook token) and the CLI deliberately does not auto-relaunch the browser for
+non-default resources — so `graph`/`teams-*` calls can return `E_AUTH_REQUIRED`
+soon after `auth --all`; re-run `auth --all` to refresh.
+
+**Shipped:** `teams`, `teams-channels`, `teams-chats`, `teams-members`,
+`teams-messages` (works where the tenant grants Chat.Read), `teams-send`.
+Copilot: documented here + resource plumbing only; the streaming client is
+future work.
+
+---
+
 ## Rules summarised
 
 1. Admin consent on `Mail.*` is a wall. There is no clever way around it.

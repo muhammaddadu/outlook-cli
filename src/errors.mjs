@@ -7,6 +7,7 @@ export const E = Object.freeze({
   AUTH_REQUIRED: 'E_AUTH_REQUIRED',
   AUTH_BLOCKED: 'E_AUTH_BLOCKED',
   HTTP: 'E_HTTP',
+  NETWORK: 'E_NETWORK',
   ARGS: 'E_ARGS',
   UNEXPECTED: 'E_UNEXPECTED',
 });
@@ -45,6 +46,7 @@ export function exitCodeFor(err) {
       case E.AUTH_BLOCKED:
         return EXIT.AUTH;
       case E.HTTP:
+      case E.NETWORK:
         return EXIT.HTTP;
       case E.ARGS:
         return EXIT.USAGE;
