@@ -69,7 +69,7 @@ issues.
 | `x-clientid`, `x-owa-sessionid`, `x-client-version` | Telemetry / consistency. |
 | `prefer: IdType="ImmutableId", exchange.behavior="…"` | Selects ID format + feature flags. |
 
-The list lives at `FORWARDED_HEADERS` in `src/client.mjs`.
+The list lives at `FORWARDED_HEADERS` in `src/capture.mjs`.
 
 ## Two layers of state
 
@@ -80,6 +80,30 @@ The list lives at `FORWARDED_HEADERS` in `src/client.mjs`.
 
 Both honour `$XDG_DATA_HOME` / `$XDG_CACHE_HOME`. Per-path overrides via
 `OUTLOOK_PROFILE` and `OUTLOOK_TOKEN_CACHE`.
+
+## Multiple resources (Outlook / Graph / Substrate)
+
+Each Microsoft API is a distinct OAuth *resource* with its own token
+audience, and a token is only accepted by its own resource — an
+`outlook.office.com` token gets `401 InvalidAuthenticationToken` from Graph.
+So auth is keyed by resource (`src/resources.mjs`):
+
+| Resource | Audience | Base URL | Powers |
+| --- | --- | --- | --- |
+| `outlook` | `https://outlook.office.com` | `…/api/v2.0/me` | mail, calendar |
+| `graph` | `https://graph.microsoft.com` | `graph.microsoft.com/v1.0` | Teams, Files, People, Groups |
+| `substrate` | `https://substrate.office.com` | `substrate.office.com` | Copilot, unified search |
+
+`captureAllTokens()` watches every Bearer the browser emits, classifies each
+by audience, and keeps one header set per resource — so a single `auth --all`
+session (which also opens Teams + Copilot tabs) can populate several. Each
+resource caches to its own `auth-<resource>.json` (the default `outlook`
+keeps the original `auth.json`). `call(auth, path, { resource })` and
+`getAuth({ resource })` route to the right base with the right token;
+`outlook token-audit` decodes the caches and reports what's reachable. Only
+the default `outlook` resource auto-launches the browser on a cache miss —
+Graph/Substrate error toward `auth --all` instead so a `graph` call never
+pops Chromium unexpectedly. See [`LEARNINGS.md`](../LEARNINGS.md) §13.
 
 When the token cache misses, we re-open Chromium against the persistent
 profile. Cookies still valid → silent SSO completes in 2–3 seconds, we
@@ -107,29 +131,27 @@ See [`LEARNINGS.md`](../LEARNINGS.md) §10 for the full investigation.
 
 ## The `call()` helper
 
-`client.mjs` exports a thin wrapper:
+`client.mjs` exports a `fetch` wrapper with built-in resilience:
 
 ```js
-export async function call(auth, path, init = {}) {
-  const res = await fetch(`${REST_BASE}${path}`, {
-    ...init,
-    headers: { ...auth, Accept: 'application/json', ...(init.headers ?? {}) },
-  });
-  const text = await res.text();
-  let body;
-  try { body = JSON.parse(text); } catch { body = text; }
-  return { status: res.status, body };
-}
+call(auth, path, { resource = 'outlook', ...init })
 ```
 
 - `auth` is the header bag (`{ authorization, x-anchormailbox, … }`).
-- `path` is appended to `REST_BASE` (`https://outlook.office.com/api/v2.0/me`).
+- `path` is appended to the chosen resource's base URL (default
+  `https://outlook.office.com/api/v2.0/me`; `graph` → `graph.microsoft.com/v1.0`).
+- Every request is bounded by `OUTLOOK_HTTP_TIMEOUT_MS` (default 30s).
+- Transient failures retry with backoff: `429`/`503` (honouring
+  `Retry-After`) for any method; network errors (DNS/refused/timeout) for
+  GET only. Exhausted network retries raise `AppError(E.NETWORK)`.
 - Always parses JSON when possible; otherwise returns the raw text.
 
 `cli.mjs` wraps `call()` with `runApi()`, which:
 
-- Catches 401 → clears the cache so the next call refreshes.
-- Throws `AppError(E.HTTP)` for any other 4xx/5xx.
+- Catches 401 → clears that resource's cache, re-captures a token, and
+  retries once; a second 401 raises `AppError(E.AUTH_REQUIRED)`.
+- Throws `AppError(E.HTTP)` for any other 4xx/5xx, extracting the OData
+  `error.code: message` for the hint.
 - Returns the parsed body on success.
 
 ## Error model

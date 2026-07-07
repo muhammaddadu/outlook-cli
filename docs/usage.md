@@ -18,7 +18,29 @@ Environment variables:
 | `OUTLOOK_DEBUG=1` | Same as `--debug` |
 | `OUTLOOK_PROFILE=/path` | Override the Chromium user-data-dir |
 | `OUTLOOK_TOKEN_CACHE=/path` | Override the cached-headers JSON file |
+| `OUTLOOK_HTTP_TIMEOUT_MS=n` | Per-request timeout (default 30000) |
+| `OUTLOOK_NO_CAPTURE=1` | Never launch Chromium; fail with `E_AUTH_REQUIRED` instead (CI, headless boxes) |
+| `OUTLOOK_GRAPH_BASE=/url` | Override the Microsoft Graph base URL |
+| `OUTLOOK_TOKEN_CACHE_GRAPH=/path` | Override the Graph token cache file (`_SUBSTRATE` also works) |
 | `XDG_DATA_HOME` / `XDG_CACHE_HOME` | Standard XDG roots |
+
+## Reliability behaviour
+
+Every API call is wrapped in automatic recovery, so transient failures
+rarely surface:
+
+- **Rejected token (401):** the CLI clears the cache, captures a fresh
+  token via silent SSO (briefly opening Chromium), and retries the request
+  once. Only if the *fresh* token is also rejected do you get
+  `E_AUTH_REQUIRED` — at that point run `outlook auth`.
+- **Throttling / outage (429, 503):** retried up to 2 more times, honouring
+  the server's `Retry-After` header (capped at 30 s per wait).
+- **Network failures (DNS, refused, timeout):** GET requests are retried
+  with backoff; writes are **not** auto-retried at the network level (a
+  timed-out send may already have been delivered). Failures surface as
+  `E_NETWORK` (exit 3).
+- **Hung connections:** every request is bounded by
+  `OUTLOOK_HTTP_TIMEOUT_MS` (default 30 s) — the CLI never hangs forever.
 
 ## Subcommands
 
@@ -31,11 +53,102 @@ renders (not just when the URL settles). Caches the captured Bearer token.
 Run this once per machine; re-run when the persistent profile's cookies
 expire (typically weeks–months) or after a tenant-driven re-auth event.
 
+Add `--all` to `auth` (or `refresh`) to capture a token for **every**
+reachable Microsoft resource in one session, not just Outlook — it also
+opens Teams and Copilot tabs (best-effort) so their tokens get minted:
+
+```bash
+outlook auth --all        # sign in once; capture Outlook + Graph + Substrate tokens
+outlook token-audit       # see which ones actually landed and what they can do
+```
+
 ### `outlook refresh`
 
 Force a fresh Bearer capture even if the cache is still valid. Opens
 Chromium briefly. Use when the on-disk token looks broken or after a CA
-policy change that invalidated the existing JWT.
+policy change that invalidated the existing JWT. `--all` refreshes every
+resource token.
+
+## Multiple resources: Graph (Teams), Substrate
+
+Mail and calendar use the **Outlook** token (audience
+`https://outlook.office.com`). Teams, Files, People, Groups live on
+**Microsoft Graph** (a different audience), and Copilot / unified search
+live on **Substrate**. A token is only valid against its own resource, so
+these need their own captured tokens — obtained with `outlook auth --all`.
+
+Reaching these is a *token-capture* problem, not a permission problem: the
+OWA app is already consented for Teams/Files/Copilot scopes (see
+`outlook token-audit`). Teams via Graph is confirmed working; whether your
+tenant grants the specific scopes a given call needs (e.g. `Chat.Read` for
+reading message bodies) varies — the errors say which scope is missing.
+
+### `outlook token-audit`
+
+Decode every cached token and report, per resource: whether it's `live` /
+`expired` / `absent`, its audience, the signed-in user, and its scopes
+grouped into capability areas (mail, calendar, teams-chat, files, copilot,
+search, …). Pure offline — no network, no browser. This is the first thing
+to run to see what you can reach.
+
+```bash
+outlook token-audit | jq '.reachable'           # ["outlook","graph",…]
+outlook token-audit | jq '.resources[] | {resource, status, capabilities: (.capabilities|keys)}'
+```
+
+### `outlook graph <path> [json]`
+
+Authenticated passthrough to Microsoft Graph — a thin proxy that attaches
+the Graph token and routes to the Graph base URL, so any Graph endpoint is
+reachable without a bespoke subcommand. Requires a Graph token
+(`outlook auth --all` first).
+
+```bash
+outlook graph /me                                  # your profile
+outlook graph "/me/chats?\$top=10"                 # Teams chats
+outlook graph /me/joinedTeams                       # Teams you belong to
+outlook graph "/chats/<id>/messages?\$top=20"      # messages in a chat
+outlook graph /chats/<id>/messages '{"body":{"content":"hi"}}' -X POST   # post a message
+
+# Target Substrate instead (Copilot / search) once a token is captured:
+outlook graph /search/api/v1/query '{...}' -X POST --resource substrate
+```
+
+`-X/--method` sets the verb (default GET); a body is read from the argument
+or STDIN for POST/PATCH/PUT. Output is the raw JSON response.
+
+### Teams
+
+Friendly verbs over the documented Graph Teams endpoints. All use the Graph
+token, so run `outlook auth --all` first.
+
+```bash
+outlook teams                          # teams you belong to (/me/joinedTeams)
+outlook teams-channels <teamId>        # channels in a team
+outlook teams-chats -n 20              # your 1:1 and group chats
+outlook teams-members <chatId>         # who's in a chat
+outlook teams-messages <chatId>        # read messages (see caveat)
+outlook teams-send <chatId> "ship it"  # post a message (sends immediately)
+outlook teams-send <chatId> --html '<b>hi</b>'
+```
+
+**Reading messages requires `Chat.Read`.** Many tenants grant the OWA/Teams
+session only `Chat.ReadBasic`, in which case `teams-messages` returns a `403`
+naming the missing scope — that's a tenant policy, not a bug (the Teams web
+client reads messages through a separate, undocumented service). Listing chats,
+members, teams, channels, and **sending** all work with the common scope set.
+
+**`teams-send` sends immediately** — treat it like `send` for email: confirm
+the chat and text first.
+
+### Copilot
+
+Not yet supported. The M365 Copilot ("Sydney") conversation runs over a
+streaming WebSocket at `m365.cloud.microsoft/chat`, not a REST call, so it
+needs a dedicated streaming client. `outlook auth --all` does capture a
+Substrate/Sydney token (visible in `token-audit`), and `outlook graph
+--resource substrate <path>` can reach Substrate endpoints, but there is no
+`copilot` command yet. See [`LEARNINGS.md`](../LEARNINGS.md) §14.
 
 ### `outlook logout`
 

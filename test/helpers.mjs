@@ -64,6 +64,25 @@ export function seedTokenCache({
   return file;
 }
 
+/**
+ * Write a captured-headers JSON file for the OUTLOOK_CAPTURE_FIXTURE seam —
+ * what capture.mjs would have produced from a real browser run. Lets tests
+ * exercise the automatic 401-recapture path without Playwright.
+ */
+export function seedCaptureFixture({ secondsFromNow = 3600, claims = {} } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'outlook-fixture-'));
+  const file = join(dir, 'captured-headers.json');
+  const exp = Math.floor(Date.now() / 1000) + secondsFromNow;
+  writeFileSync(
+    file,
+    JSON.stringify({
+      authorization: `Bearer ${makeFakeJwt({ expSeconds: exp, claims })}`,
+      'x-anchormailbox': 'PUID:fixture@test',
+    }),
+  );
+  return file;
+}
+
 /** Return a unique tmp path for an isolated learnings file. */
 export function freshLearningsPath() {
   return join(mkdtempSync(join(tmpdir(), 'outlook-learn-')), 'learnings.md');
@@ -93,11 +112,15 @@ export function startMockServer(handler) {
 /**
  * Spawn the CLI as a subprocess. Returns `{ code, stdout, stderr }`.
  * Pass `env` to add/override environment variables for that run.
+ *
+ * OUTLOOK_NO_CAPTURE is set by default so no test can ever fall through to
+ * a real Playwright/Chromium launch; override it (or set
+ * OUTLOOK_CAPTURE_FIXTURE) in tests that exercise the recapture path.
  */
 export function runCli(args, { env = {}, stdin = null, timeoutMs = 15_000 } = {}) {
   return new Promise((resolveRun, reject) => {
     const child = spawn(process.execPath, [CLI_PATH, ...args], {
-      env: { ...process.env, ...env },
+      env: { OUTLOOK_NO_CAPTURE: '1', ...process.env, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';

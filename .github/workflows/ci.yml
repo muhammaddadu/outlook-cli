@@ -49,7 +49,7 @@ jobs:
           # These should never be tracked. They're in .gitignore but a
           # contributor might force-add. Hard fail if any are present.
           BAD=$(git ls-files \
-            | grep -E '(^|/)(auth(-cache)?\.json|.*\.token\.json|.*\.bearer|\.env|\.env\.[^/]+)$' \
+            | grep -E '(^|/)(auth(-[a-z]+)?\.json|.*\.token\.json|.*\.bearer|\.env|\.env\.[^/]+)$' \
             | grep -v '\.example$' || true)
           if [ -n "$BAD" ]; then
             echo "::error::Files matching credential patterns are tracked:"
@@ -71,24 +71,23 @@ jobs:
           fi
 
       - name: Refuse obvious tenant / object identifiers
+        env:
+          # The known-real tenant/OID/PUID values are supplied via a repo
+          # secret (a pipe-separated regex) so they never live in the repo
+          # itself — putting them here would be the very PII leak we guard
+          # against. Set it to a pipe-separated regex of your real values:
+          #   gh secret set PII_DENYLIST --body '<tenant-guid>|<oid-guid>|<puid-hex>'
+          PII_DENYLIST: ${{ secrets.PII_DENYLIST }}
         run: |
-          # Catch the specific UUIDs that surface during local development
-          # in case anyone ever copy-pastes a debug payload into a doc.
-          # Generic UUIDs are fine; these are the ones we know are real.
-          #
-          # The denylist is assembled from fragments so this workflow file
-          # itself doesn't trip the check.
-          A="2ba9001d-d7f9-43a3-a098"
-          B="6a927ac715ca"
-          C="255c2968-9d39-4dda-b5ac"
-          D="7d596f41668d"
-          E="10030000"
-          F="ADB9FE10"
-          DENYLIST="${A}-${B}|${C}-${D}|${E}${F}"
-          HITS=$(git grep -nE "$DENYLIST" \
-            -- ':!**/CONTRIBUTING.md' \
-               ':!**/LEARNINGS.md' \
-               ':!**/.github/workflows/ci.yml' \
+          # Catch the specific identifiers that surface during local
+          # development in case anyone copy-pastes a debug payload into a doc.
+          # Generic UUIDs are fine; only the known-real ones are denied.
+          if [ -z "$PII_DENYLIST" ]; then
+            echo "::notice::PII_DENYLIST secret not set; skipping exact-identifier check (JWT + filename checks above still run)."
+            exit 0
+          fi
+          HITS=$(git grep -nE "$PII_DENYLIST" \
+            -- ':!**/.github/workflows/ci.yml' \
             2>/dev/null || true)
           if [ -n "$HITS" ]; then
             echo "::error::Real tenant / OID / PUID found in tracked file:"

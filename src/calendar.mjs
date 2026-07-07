@@ -15,6 +15,7 @@
 // queries that don't need expansion.
 
 import { AppError, E } from './errors.mjs';
+import { parseCount } from './odata.mjs';
 
 const UNIT_MS = {
   m: 60_000,
@@ -113,8 +114,8 @@ export function calendarViewPath({ start, end }, extra = {}) {
     ['startDateTime', start.toISOString()],
     ['endDateTime', end.toISOString()],
   ];
-  if (extra.top != null) params.push(['$top', extra.top]);
-  if (extra.skip != null) params.push(['$skip', extra.skip]);
+  if (extra.top != null) params.push(['$top', parseCount(extra.top, '--top')]);
+  if (extra.skip != null) params.push(['$skip', parseCount(extra.skip, '--skip')]);
   if (extra.select) params.push(['$select', extra.select]);
   if (extra.filter) params.push(['$filter', extra.filter]);
   if (extra.orderBy) params.push(['$orderby', extra.orderBy]);

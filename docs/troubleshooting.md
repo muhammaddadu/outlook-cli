@@ -14,11 +14,17 @@ code from the table below.
 
 | Code | Exit | Meaning | Fix |
 | --- | ---: | --- | --- |
-| `E_AUTH_REQUIRED` | 2 | No usable session; OWA redirected to login. | `outlook auth` |
-| `E_AUTH_BLOCKED` | 2 | Browser loaded OWA but never produced a Bearer token. | See "Bearer never observed" below |
-| `E_HTTP` | 3 | Outlook API returned 4xx/5xx. The hint contains the response body. | Depends on body — see "HTTP errors" below |
-| `E_ARGS` | 64 | Bad input (e.g. invalid JSON for `send`). | Fix the input |
+| `E_AUTH_REQUIRED` | 2 | No usable session. The CLI already tried to capture a fresh token (unless `OUTLOOK_NO_CAPTURE` is set) and failed or was rejected again. | `outlook auth` |
+| `E_AUTH_BLOCKED` | 2 | Browser loaded OWA but never produced a Bearer token (or the window was closed mid-capture). | See "Bearer never observed" below |
+| `E_HTTP` | 3 | Outlook API returned 4xx/5xx after retries. The hint contains the server's error message. | Depends on body — see "HTTP errors" below |
+| `E_NETWORK` | 3 | Could not reach the API at all (DNS, connection refused, timeout) after retries. | Check network/VPN/proxy; raise `OUTLOOK_HTTP_TIMEOUT_MS` on slow links |
+| `E_ARGS` | 64 | Bad input (e.g. invalid JSON for `send`, non-numeric `--top`, unknown flag). | Fix the input |
 | `E_UNEXPECTED` | 1 | Something we didn't anticipate. | Re-run with `--debug` and read the stack trace |
+
+Transient failures are handled before you ever see them: a rejected token
+(401) triggers one automatic re-capture + retry, and 429/503 responses are
+retried with `Retry-After`-aware backoff. See "Reliability behaviour" in
+[`usage.md`](./usage.md).
 
 ## Common failure modes
 
@@ -53,7 +59,7 @@ the wild:
 
 Possibilities:
 
-- **Captured the wrong header set.** If `client.mjs`' capture filter is
+- **Captured the wrong header set.** If `capture.mjs`' capture filter is
   off (e.g. you edited `FORWARDED_HEADERS`), the request OWA fires first
   may have been a non-API request and we got its headers. Re-run with
   `--debug` and inspect the captured headers in
@@ -99,7 +105,10 @@ jq -r .headers.authorization < ~/.cache/outlook-spike/auth.json \
 ```
 
 If the captured value isn't a real JWT (wrong header type, missing
-segments), the capture in `client.mjs` is grabbing the wrong request.
+segments), the capture in `capture.mjs` is grabbing the wrong request.
+The CLI now warns at capture time when the token has no decodable expiry,
+so this state should announce itself instead of silently relaunching
+Chromium on every command.
 
 ### "Playwright: 'Executable doesn't exist'"
 
@@ -118,7 +127,7 @@ This is a tenant-level block on a specific Microsoft client ID, surfaced
 during `outlook auth`. It does **not** apply to the OWA client we
 piggyback on (`9199bf20-…`). If you see this, something is wrong with the
 Playwright launch — it's somehow trying to authenticate against a different
-client. Check that `HOME_URL` in `client.mjs` still points at
+client. Check that `HOME_URL` in `capture.mjs` still points at
 `https://outlook.office.com/mail/`.
 
 ## Calendar gotchas

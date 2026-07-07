@@ -103,7 +103,21 @@ those actions would be allowed by their organisation's policy.
 | CAL-5 | Free/busy lookup across multiple mailboxes with configurable interval. |
 | CAL-6 | List user's calendars (primary + shared + subscribed). |
 
-### 5.3 Agent integration
+### 5.3 Microsoft Teams (via Graph)
+
+Added after the mail/calendar core proved out. Teams uses a **Microsoft
+Graph** token — a different audience than mail — captured by
+`outlook auth --all`.
+
+| ID | Requirement |
+| --- | --- |
+| TEAM-1 | Capture a token per Microsoft resource (Outlook / Graph / Substrate) in one interactive session, keyed by audience. `outlook token-audit` reports what's reachable. |
+| TEAM-2 | List teams, channels, chats, and chat members. |
+| TEAM-3 | Post a message to a chat (immediate send — treated like `send` for email). |
+| TEAM-4 | Read chat messages where the tenant grants `Chat.Read`; otherwise surface a clear scope error (do not fake it). |
+| TEAM-5 | Provide `outlook graph <path>` as a raw authenticated passthrough for endpoints without a friendly verb. |
+
+### 5.4 Agent integration
 
 | ID | Requirement |
 | --- | --- |
@@ -113,14 +127,14 @@ those actions would be allowed by their organisation's policy.
 | AGT-4 | Expose a session-start context call (`outlook context`) that returns user identity + accumulated learnings, with no network traffic. |
 | AGT-5 | Provide a learnings store (`outlook learn add/forget/clear`) the agent maintains across sessions. |
 
-### 5.4 Operational
+### 5.5 Operational
 
 | ID | Requirement |
 | --- | --- |
 | OPS-1 | One-shot install: `npm i -g github:muhammaddadu/outlook-cli && outlook setup --with-skill && outlook auth`. |
 | OPS-2 | Token cache + browser profile live under XDG paths outside the repo. |
 | OPS-3 | Cache-hit calls (the common case) must complete in < 1 second and must NOT open a browser window. |
-| OPS-4 | The CLI must fail closed on auth issues: 401 → clear cache, exit 2, tell user to re-run. |
+| OPS-4 | The CLI must fail closed on auth issues: 401 → clear cache, re-capture a fresh token and retry once; a second 401 exits 2 and tells the user to re-run. Transient failures (429/503, network) retry with backoff; every request is timeout-bounded. |
 | OPS-5 | Test suite runs `node --test test/` with no network, no Playwright, no real mailbox — only mock servers and synthetic JWTs. |
 
 ## 6. Non-functional requirements
@@ -128,7 +142,7 @@ those actions would be allowed by their organisation's policy.
 | Area | Requirement |
 | --- | --- |
 | **Performance** | Cache hit: sub-second (P95 < 1s). Cache miss: ≤ 5 seconds end-to-end including silent SSO. |
-| **Reliability** | All 4xx/5xx surface as `E_HTTP` with the server's error body in the hint. 401 specifically clears the token cache so the next call refreshes. |
+| **Reliability** | All 4xx/5xx surface as `E_HTTP` with the server's error message in the hint; unreachable APIs surface as `E_NETWORK`. 401 auto-recaptures + retries once. 429/503 retry with `Retry-After` backoff; GET network errors retry with backoff. Every request is bounded by `OUTLOOK_HTTP_TIMEOUT_MS`. |
 | **Privacy** | Token cache and learnings file are local-only, never transmitted. Plain-text markdown for learnings so the user can audit/edit. |
 | **Security** | No code-signed binaries needed; no keychain reads of Microsoft-protected slots; no proxy/MITM. Captured Bearer is scoped to the user's existing OWA consent — no scope elevation. |
 | **Portability** | macOS confirmed working; Linux likely works (untested); WSL likely works; Windows native not yet supported. |
@@ -149,6 +163,13 @@ those actions would be allowed by their organisation's policy.
   it; not built).
 - MCP server wrapper for first-class agent tool integration.
 - Windows-native install path (works in WSL today).
+- **Microsoft Copilot.** Its conversation runs over a streaming WebSocket
+  (`m365.cloud.microsoft/chat`, Substrate/Sydney audience), not a REST call,
+  so it needs a dedicated streaming client. Token capture works; the client
+  does not exist. See [`LEARNINGS.md`](../LEARNINGS.md) §14.
+- Reading Teams message *bodies* in tenants that grant only `Chat.ReadBasic`
+  (the Graph token lacks `Chat.Read`; the web client uses a separate
+  undocumented service). Listing and sending are supported.
 
 ## 8. Success metrics
 

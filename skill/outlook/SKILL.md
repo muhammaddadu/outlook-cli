@@ -1,6 +1,6 @@
 ---
 name: outlook
-description: Read, search, triage, draft, and send mail PLUS view and manage calendar events through the user's Outlook / Microsoft 365 mailbox. Use when the user asks to check inbox, summarise unread mail, find a specific email, draft a reply they can review, send mail, view their calendar / agenda, find what meetings they have today / this week, create or update calendar events, RSVP to invites, or check free/busy. Prefer drafts (`draft`, `draft-reply`, `draft-reply-all`, `draft-forward`) over direct send so the user can review in Outlook first. Confirm with the user before creating or cancelling events with attendees (invitations / cancellations send IMMEDIATELY). Requires the `outlook` CLI to be installed on the user's PATH; if it is not, tell the user and stop. All output is JSON to stdout; pipe through `jq` for transformation. This skill does NOT cover Gmail, IMAP, or other mail providers.
+description: Read, search, triage, draft, and send mail PLUS view and manage calendar events through the user's Outlook / Microsoft 365 mailbox, PLUS list Microsoft Teams (teams, channels, chats, members) and post Teams chat messages via Graph. Use when the user asks to check inbox, summarise unread mail, find a specific email, draft a reply they can review, send mail, view their calendar / agenda, find what meetings they have today / this week, create or update calendar events, RSVP to invites, check free/busy, list their Teams / chats, or send a Teams message. Teams needs `outlook auth --all`; reading Teams message bodies may be blocked by tenant scope. Copilot is not supported (streaming protocol). Prefer drafts (`draft`, `draft-reply`, `draft-reply-all`, `draft-forward`) over direct send so the user can review in Outlook first. Confirm with the user before creating or cancelling events with attendees (invitations / cancellations send IMMEDIATELY). Requires the `outlook` CLI to be installed on the user's PATH; if it is not, tell the user and stop. All output is JSON to stdout; pipe through `jq` for transformation. This skill does NOT cover Gmail, IMAP, or other mail providers.
 ---
 
 # Using the `outlook` CLI
@@ -102,6 +102,18 @@ outlook tentative  <id> [-c "<comment>"]   # RSVP maybe
 
 # Calendar — availability
 outlook free-busy <email> [<email>…] [--from --to --interval]
+
+# Microsoft Teams (via Graph; needs `outlook auth --all` first)
+outlook teams                         # teams you belong to
+outlook teams-channels <teamId>       # channels in a team
+outlook teams-chats [-n N]            # your 1:1 and group chats
+outlook teams-members <chatId>        # members of a chat
+outlook teams-messages <chatId>       # read chat messages (needs Chat.Read; may 403)
+outlook teams-send <chatId> "<text>"  # post a message (SENDS immediately — confirm first)
+
+# Advanced: raw Graph / Substrate passthrough
+outlook token-audit                   # which resources (Outlook/Graph/Substrate) are reachable + scopes (no network)
+outlook graph <path> [json] [-X GET]  # authenticated Graph passthrough
 
 # Self-learning (call at session start, then append observations)
 outlook context                       # user info + accumulated learnings (no network)
@@ -401,6 +413,40 @@ EOF
 For HTML: `"ContentType": "HTML"` with HTML in `Content`. The server
 returns 202 and the CLI prints `{ "sent": true }`.
 
+## Microsoft Teams (via Graph)
+
+Teams runs on **Microsoft Graph** — a different token audience than mail. It
+needs a Graph token, captured by `outlook auth --all` (opens a browser —
+**user-driven only**, like `outlook auth`; never attempt it yourself).
+
+1. `outlook token-audit` (free, no network) shows whether a `live` `graph`
+   token is cached. If not, tell the user to run `outlook auth --all`.
+   Graph/Substrate tokens are short-lived, so this may be needed again.
+2. Then use the friendly verbs:
+
+   ```bash
+   outlook teams                       # list teams
+   outlook teams-chats -n 20           # list chats → get a chatId
+   outlook teams-members <chatId>
+   outlook teams-send <chatId> "on my way"
+   ```
+
+- **Reading messages (`teams-messages`) needs `Chat.Read`.** If the tenant
+  only granted `Chat.ReadBasic` you'll get exit 3 / `403` naming the missing
+  scope — report that to the user; it's policy, not a bug. Listing and
+  sending work with the common scope set.
+- **`teams-send` posts immediately.** Confirm the target chat and the exact
+  text with the user first, exactly as you would before `send` for email.
+- For anything without a friendly verb, `outlook graph <path>` is a raw
+  authenticated Graph proxy.
+
+## Copilot
+
+Not supported yet. M365 Copilot streams over a WebSocket, not a REST call, so
+there is no `copilot` command. Don't claim you can drive Copilot. (`outlook
+graph --resource substrate <path>` can reach Substrate read endpoints if the
+user asks to experiment.)
+
 ## Output conventions
 
 - stdout: JSON only — pipe-safe.
@@ -419,11 +465,13 @@ outlook list --unread -n 50 2>/dev/null | jq '.value | length'
 | Code | Meaning | What to do |
 | ---: | --- | --- |
 | 0 | Success | — |
-| 2 | `E_AUTH_REQUIRED` / `E_AUTH_BLOCKED`. Session is gone. | **Ask the user to run `outlook auth` manually.** You cannot run `outlook auth` yourself — it opens a browser window the user must interact with for MFA. |
-| 3 | `E_HTTP`. API returned 4xx/5xx. The stderr block includes the response body. | Read the body, decide whether to retry or surface the error. |
-| 64 | `E_ARGS`. Bad input. | Fix the flag / JSON and retry. |
+| 2 | `E_AUTH_REQUIRED` / `E_AUTH_BLOCKED`. Session is gone — the CLI already tried to re-capture a token automatically and failed. | **Ask the user to run `outlook auth` manually.** You cannot run `outlook auth` yourself — it opens a browser window the user must interact with for MFA. |
+| 3 | `E_HTTP` (API returned 4xx/5xx after automatic retries) or `E_NETWORK` (could not reach the API at all). The stderr block includes the server's error message. | For `E_HTTP`, read the message and fix the request or surface the error. For `E_NETWORK`, tell the user their network/VPN looks down. |
+| 64 | `E_ARGS`. Bad input (invalid JSON, non-numeric `--top`, unknown flag). | Fix the flag / JSON and retry. |
 | 130 | User pressed Ctrl-C. | Stop. |
 
+Transient failures (rejected token, 429 throttling, brief outages) are
+retried automatically inside the CLI — do **not** add your own retry loop.
 When a command exits with 2, stop and surface the recovery instruction
 clearly. Do not loop trying to re-authenticate.
 
@@ -442,7 +490,6 @@ clearly. Do not loop trying to re-authenticate.
 ## When NOT to use this skill
 
 - Gmail / IMAP / non-Microsoft mail (this CLI is Outlook-specific).
-- Calendar events (the CLI doesn't expose /events yet).
 - Bulk mail operations on thousands of messages without explicit user
   consent — pagination makes this possible but you should confirm scope
   first.

@@ -282,7 +282,7 @@ test('--debug puts diagnostics on stderr, leaves stdout clean', async () => {
     });
     assert.deepEqual(JSON.parse(stdout), { ok: true });
     assert.match(stderr, /\[debug\] fetch GET/);
-    assert.match(stderr, /\[debug\] using cached token/);
+    assert.match(stderr, /\[debug\] using cached outlook token/);
   } finally {
     await mock.close();
   }

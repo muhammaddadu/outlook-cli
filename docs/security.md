@@ -15,14 +15,22 @@ using it on anything you care about.
    `~/.cache/outlook-spike/auth.json`.
 3. Subsequent CLI calls read the cached header and make the same API calls
    from Node `fetch` directly.
+4. With `outlook auth --all`, the CLI also opens the Teams and Copilot web
+   apps and captures their tokens the same way — one per Microsoft resource,
+   saved as `auth-graph.json` (Microsoft Graph) and `auth-substrate.json`
+   (Substrate). This *broadens the blast radius*: a captured Graph token can
+   read your Teams/Files/People/directory, not just mail. See "What's
+   sensitive" below.
 
 ## What the tool does **not** do
 
 - No keylogging. Your password is typed into Microsoft's UI.
 - No new OAuth consent. The token has only the scopes you previously
   consented to when first signing into OWA.
-- No outbound communication to anything except `outlook.office.com` and
-  `login.microsoftonline.com`.
+- No outbound communication to anything except Microsoft first-party hosts:
+  `outlook.office.com`, `login.microsoftonline.com`, and — only after
+  `auth --all` — `graph.microsoft.com`, `substrate.office.com`,
+  `teams.microsoft.com`, and `m365.cloud.microsoft`.
 - No telemetry. There is no analytics layer.
 
 ## What's sensitive
@@ -30,14 +38,16 @@ using it on anything you care about.
 | Path | Sensitivity |
 | --- | --- |
 | `~/.cache/outlook-spike/auth.json` | Contains a JWT with read+send access to your mailbox. Anyone who reads this file can act as you for ~24h. |
+| `~/.cache/outlook-spike/auth-graph.json` | Present after `auth --all`. A Microsoft Graph token — read your Teams, Files, People, and directory, and send Teams messages. Shorter-lived (minutes) but a broader blast radius than the mail token. |
+| `~/.cache/outlook-spike/auth-substrate.json` | Present after `auth --all`. A Substrate token (Copilot / unified search). Short-lived. |
 | `~/.local/share/outlook-spike/browser-profile/` | Contains SSO cookies. Anyone with this directory can sign in as you without MFA. |
 | `~/.local/share/outlook-spike/learnings.md` | Free-form notes the AI agent has accumulated. May contain names, email addresses, project names, and habits. Plain-text markdown; user-editable. |
 
 These are stored with default user-only permissions. **Don't share them.
 Don't sync them to cloud storage. Don't commit them.** The repo `.gitignore`
-already protects against `auth.json` and any `auth-cache.json` filename
-landing in-tree, but cloud-drive sync (iCloud Desktop, OneDrive, Dropbox
-selective-sync) is up to you.
+protects against `auth.json` and any `auth-*.json` filename (the per-resource
+caches) landing in-tree, but cloud-drive sync (iCloud Desktop, OneDrive,
+Dropbox selective-sync) is up to you.
 
 ## Threats this is and isn't safe against
 
@@ -47,7 +57,7 @@ selective-sync) is up to you.
 | Malware that already runs as your user | **Not safe** — it can read `auth.json`. Same exposure as any other credential file (browser cookies, SSH keys). |
 | A shared / multi-user machine | **Not safe** — anyone with shell access as you can use the token. Don't use this on shared machines. |
 | Enterprise EDR / DLP monitoring | **Detectable** — mailbox API calls from a non-Outlook process pattern stand out. See "EDR considerations" below. |
-| Microsoft revoking the token mid-call | **Safe** — the CLI catches 401, clears the cache, and exits with `E_AUTH_REQUIRED` telling you to re-run. |
+| Microsoft revoking the token mid-call | **Safe** — the CLI catches 401, clears the cache, re-captures a fresh token and retries once; only a second 401 exits with `E_AUTH_REQUIRED` telling you to re-run `outlook auth`. |
 
 ## EDR considerations
 
