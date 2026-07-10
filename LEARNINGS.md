@@ -338,6 +338,58 @@ future work.
 
 ---
 
+## 15. `auth --all` silently capturing only the Outlook token, not Graph/Substrate
+
+**Symptom:** after a real `outlook auth --all` run, `outlook token-audit`
+showed a fresh, live `outlook` token but `graph` still pointed at the *old*
+cache file from days earlier (same stale `expiresAt`, not merely "captured
+then expired quickly"). `substrate` stayed `absent`. `outlook teams` then
+failed with "No usable graph token cached."
+
+**Root cause:** the capture loop in `captureAllTokens()` (`capture.mjs`)
+only watched the main OWA page for closure:
+
+```js
+if (page.isClosed()) {
+  if (found[DEFAULT_RESOURCE]) break;
+  ...
+}
+```
+
+The Teams and Copilot tabs opened by `openExtraSurfaces` are separate,
+unfocused pages in the same browser context — the user never sees them
+unless they go looking. The natural user behaviour is: sign in on the
+visible OWA tab, see the inbox, close that window. The moment that
+happens, `page.isClosed()` trips and the loop exits — even though the
+Teams/Copilot tabs are still mid-flight (loading, or waiting on a sign-in /
+"allow access" prompt the user never knew to click). Their tokens are
+simply never observed on the wire.
+
+This is not the audience wall (§13) or a scopes problem — it's a plain
+race: the capture window closes before the extra surfaces get a chance to
+mint anything.
+
+**Fix:** track every page opened during the session (main + extras) in a
+`Set`; only treat the browser as "closed" once *all* of them are gone, not
+just the main one. Also print an explicit, un-missable message right after
+opening the extra tabs ("if either shows a sign-in or 'allow access'
+prompt, complete it there too — leave every tab open until this finishes
+on its own"), and at the end, when `--all` was requested, name exactly
+which resources (`graph`, `substrate`) were *not* captured rather than a
+generic "signed in" message that hides partial failure.
+
+**Not fixed by this change:** Copilot still has no client (§14) — capturing
+a live `substrate` token doesn't add a `copilot` command, it just makes
+`outlook graph --resource substrate <path>` usable for the plain-read
+endpoints that exist.
+
+**Verification:** this path is e2e-only per CONTRIBUTING.md (no Playwright
+in the test suite) — verified manually with a real `outlook auth --all`
+run, watching for the new tab-guidance message and confirming
+`token-audit` shows fresh `graph`/`substrate` entries afterward.
+
+---
+
 ## Rules summarised
 
 1. Admin consent on `Mail.*` is a wall. There is no clever way around it.

@@ -86,6 +86,21 @@ has been migrated, the v2 endpoint is gone.
    audience token. OWA does acquire one internally; the capture filter will
    pick it up automatically once you point the request URL at Graph.
 
+### "`auth --all` only captured the Outlook token, not Graph/Substrate"
+
+`outlook token-audit` shows `outlook: live` but `graph`/`substrate` still
+`expired` or `absent` right after running `outlook auth --all`. The Teams
+and Copilot tabs this opens are unfocused background tabs — if you sign in
+on the visible OWA window and close it as soon as you see your inbox (the
+natural thing to do), those tabs may still be loading or waiting on a
+sign-in / "allow access" prompt you never saw. As of this fix the CLI
+tells you explicitly when it opens those extra tabs and won't end the
+capture just because you closed the main one — but you still need to
+actually click through anything they show. **Fix:** re-run
+`outlook auth --all` and check every tab that opens (not just the first)
+before it closes on its own; if a Teams/Copilot tab shows a prompt,
+complete it there too. See LEARNINGS.md §15 for the full story.
+
 ### "Chromium flashes on every call"
 
 Token cache isn't being read. Check:

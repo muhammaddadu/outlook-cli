@@ -16,7 +16,7 @@ import { profileDir } from './paths.mjs';
 import { AppError, E } from './errors.mjs';
 import { debug, info } from './output.mjs';
 import { decodePayload } from './jwt.mjs';
-import { classifyToken, DEFAULT_RESOURCE } from './resources.mjs';
+import { classifyToken, DEFAULT_RESOURCE, RESOURCES } from './resources.mjs';
 
 export const HOME_URL = 'https://outlook.office.com/mail/';
 
@@ -94,8 +94,19 @@ export async function captureAllTokens({
   /** @type {Record<string, Record<string,string>>} */
   const found = {};
 
+  // Every page we open — the main OWA tab plus any Teams/Copilot tabs — is
+  // tracked here. Previously only the main tab's isClosed() ended the
+  // capture loop, so a user who signs in on OWA and closes that window the
+  // moment they see their inbox (the natural thing to do) silently lost
+  // Teams/Copilot capture: the extra tabs were often still mid-flight
+  // acquiring their own tokens. We now only treat the browser as "closed"
+  // once every tracked page is gone.
+  const trackedPages = new Set();
+
   try {
     const page = context.pages()[0] ?? (await context.newPage());
+    trackedPages.add(page);
+    context.on('page', (p) => trackedPages.add(p));
 
     // Listen context-wide so tokens are captured no matter which tab/popup
     // fires them (Teams and Copilot open their own surfaces).
@@ -122,16 +133,31 @@ export async function captureAllTokens({
     for (const url of extraSurfaces) {
       try {
         const extra = await context.newPage();
+        trackedPages.add(extra);
         await extra.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
       } catch (e) {
         debug(`extra surface ${url} did not load: ${e.message}`);
       }
     }
 
+    // These tabs are easy to miss — they open without stealing focus from
+    // whichever tab the user is actively signing in on. Say so explicitly,
+    // since a silent background tab that needed one click (a sign-in
+    // prompt, an "allow access" consent screen) is the most common way
+    // Graph/Substrate capture fails.
+    if (extraSurfaces.length) {
+      info(
+        `Opened ${extraSurfaces.length} additional tab(s) to reach Teams/Copilot. ` +
+          'If either shows a sign-in or "allow access" prompt, complete it there too — ' +
+          'leave every tab open until this command finishes on its own.',
+      );
+    }
+
     const deadline = Date.now() + timeoutMs;
     let sawLogin = false;
     while (Date.now() < deadline) {
-      if (page.isClosed()) {
+      const anyPageOpen = [...trackedPages].some((p) => !p.isClosed());
+      if (!anyPageOpen) {
         if (found[DEFAULT_RESOURCE]) break; // got what we needed before it closed
         throw new AppError({
           code: E.AUTH_BLOCKED,
@@ -139,7 +165,9 @@ export async function captureAllTokens({
           hint: 'Re-run the command and leave the window open until it closes itself.',
         });
       }
-      sawLogin = sawLogin || LOGIN_URL_RE.test(page.url());
+      if (!page.isClosed()) {
+        sawLogin = sawLogin || LOGIN_URL_RE.test(page.url());
+      }
       if (sawLogin && !interactive && !found[DEFAULT_RESOURCE]) {
         throw new AppError({
           code: E.AUTH_REQUIRED,
@@ -165,6 +193,17 @@ export async function captureAllTokens({
     debug(`captured tokens for: ${Object.keys(found).join(', ')}`);
     if (waitForAll) {
       info(`Captured tokens for: ${Object.keys(found).join(', ')}.`);
+      const missing = Object.keys(RESOURCES).filter(
+        (r) => r !== DEFAULT_RESOURCE && !found[r],
+      );
+      if (missing.length) {
+        info(
+          `Warning: did not capture a token for: ${missing.join(', ')}. This usually means ` +
+            'a Teams/Copilot tab needed a click (sign-in, "allow access") that never ' +
+            'happened, or it closed before finishing. Re-run `outlook auth --all` and watch ' +
+            'for the extra tabs/prompts this time.',
+        );
+      }
     }
     return found;
   } catch (err) {
