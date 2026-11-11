@@ -208,12 +208,14 @@ export async function runKeepalive({ reloadMinutes = 30, hours } = {}) {
   attachTokenSniffer(context, (key, bag) => {
     // loadCachedAuth returns null for stale tokens, so a stale cache is
     // always replaced.
-    saveVariant(bag, key); // keep every app's token (scopes differ per app)
+    const savedVariant = saveVariant(bag, key); // keep every app's token (scopes differ per app)
     const current = loadCachedAuth(key)?.headers;
-    if (isNewerToken(current, bag)) {
-      saveAuth(bag, key);
-      const exp = decodePayload(bag.authorization)?.exp;
-      status.tokens[key] = { savedAt: new Date().toISOString(), expiresAt: exp ? new Date(exp * 1000).toISOString() : null };
+    const savedPrimary = isNewerToken(current, bag);
+    if (savedPrimary) saveAuth(bag, key);
+    if (savedVariant || savedPrimary) {
+      const claims = decodePayload(bag.authorization) ?? {};
+      const exp = claims.exp;
+      status.tokens[`${key}@${claims.appid ?? '?'}`] = { savedAt: new Date().toISOString(), expiresAt: exp ? new Date(exp * 1000).toISOString() : null };
       writeStatus();
       const mins = Math.round(((decodePayload(bag.authorization)?.exp ?? 0) * 1000 - Date.now()) / 60_000);
       debug(`keepalive saved ${key} token (~${mins}m)`);
