@@ -102,6 +102,11 @@ outlook keepalive --uninstall-launchd
   `outlook token-audit` includes it under `keepalive`.
 - One instance only (pid file). It owns the browser profile while running, so
   `auth` refuses to start; stop keepalive first if you need `auth`.
+- Keeps every web app's token per resource (`auth-graph@<appid>.json`).
+  Graph from Teams web carries `ChannelMessage.Read.All` (~75 min); Graph
+  from Outlook web carries `Chat.Read` (~24 h). A 403 "missing scope" is
+  retried once with a cached sibling that has the scope, so both Teams
+  channels and chats work.
 - It never reads or replays cookies or refresh tokens itself — the browser
   does all authentication, exactly as for the user.
 

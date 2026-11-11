@@ -166,7 +166,7 @@ export async function runKeepalive({ reloadMinutes = 30, hours } = {}) {
     return;
   }
   const { openContext, attachTokenSniffer } = await import('./capture.mjs');
-  const { loadCachedAuth, saveAuth } = await import('./auth.mjs');
+  const { loadCachedAuth, saveAuth, saveVariant } = await import('./auth.mjs');
 
   mkdirSync(dirname(pidFile()), { recursive: true });
   writeFileSync(pidFile(), String(process.pid));
@@ -208,6 +208,7 @@ export async function runKeepalive({ reloadMinutes = 30, hours } = {}) {
   attachTokenSniffer(context, (key, bag) => {
     // loadCachedAuth returns null for stale tokens, so a stale cache is
     // always replaced.
+    saveVariant(bag, key); // keep every app's token (scopes differ per app)
     const current = loadCachedAuth(key)?.headers;
     if (isNewerToken(current, bag)) {
       saveAuth(bag, key);

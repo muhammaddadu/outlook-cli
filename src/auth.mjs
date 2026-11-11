@@ -15,8 +15,9 @@ import {
   mkdirSync,
   existsSync,
   unlinkSync,
+  readdirSync,
 } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, basename, join } from 'node:path';
 import { tokenCacheFile } from './paths.mjs';
 import { debug, info } from './output.mjs';
 import { decodePayload } from './jwt.mjs';
@@ -97,6 +98,80 @@ export function saveAuth(headers, res = DEFAULT_RESOURCE) {
   writeFileSync(
     file,
     JSON.stringify({ headers, expiresAt: exp, savedAt: Date.now() }, null, 2),
+  );
+  saveVariant(headers, res);
+}
+
+// ---------------------------------------------------------------------------
+// Per-app variants. Different web apps get tokens for the *same* resource
+// with different scopes (e.g. Graph from Teams web has ChannelMessage.Read.All
+// but not Chat.Read; Graph from Outlook web has Chat.Read but not
+// ChannelMessage.Read.All). The primary cache file holds one; every token is
+// also kept as `<cache>@<appid>.json` so a 403 "missing scope" can retry with
+// a sibling that has the scope.
+
+function variantFile(res, appid) {
+  const primary = tokenCacheFile(res);
+  return join(dirname(primary), `${basename(primary, '.json')}@${appid}.json`);
+}
+
+function scopesOf(bearer) {
+  const scp = decodePayload(bearer)?.scp;
+  return new Set(typeof scp === 'string' ? scp.split(' ') : []);
+}
+
+/** Save `headers` as the variant for its app id, if it outlives the one there. */
+export function saveVariant(headers, res = DEFAULT_RESOURCE) {
+  const appid = decodePayload(headers?.authorization ?? '')?.appid;
+  const exp = decodeJwtExp(headers?.authorization ?? '');
+  if (!appid || !exp) return false;
+  const file = variantFile(res, appid);
+  try {
+    const cur = JSON.parse(readFileSync(file, 'utf8'));
+    if (cur?.headers?.authorization === headers.authorization) return false;
+    if ((cur?.expiresAt ?? 0) > exp) return false;
+  } catch {}
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify({ headers, expiresAt: exp, savedAt: Date.now() }, null, 2));
+  return true;
+}
+
+/** Every still-valid cached token for `res` (variants), newest-expiring first. */
+export function loadVariants(res = DEFAULT_RESOURCE) {
+  const primary = tokenCacheFile(res);
+  const dir = dirname(primary);
+  const prefix = `${basename(primary, '.json')}@`;
+  let names = [];
+  try {
+    names = readdirSync(dir).filter((n) => n.startsWith(prefix) && n.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const n of names) {
+    try {
+      const entry = JSON.parse(readFileSync(join(dir, n), 'utf8'));
+      const exp = decodeJwtExp(entry?.headers?.authorization ?? '');
+      if (!exp || exp - Date.now() < MIN_LIFETIME_MS) continue;
+      out.push({ headers: entry.headers, expiresAt: exp, scopes: scopesOf(entry.headers.authorization) });
+    } catch {}
+  }
+  return out.sort((a, b) => b.expiresAt - a.expiresAt);
+}
+
+/** Scopes named in a Graph 403 like "API requires one of 'A, B'". */
+export function requiredScopesFrom(body) {
+  const msg = typeof body === 'string' ? body : (body?.error?.message ?? '');
+  const m = /requires one of '([^']+)'/i.exec(msg);
+  return m ? m[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+}
+
+/** A cached variant of `res` holding one of `required` scopes, other than `exclude`. */
+export function variantWithScopes(res, required, exclude) {
+  return (
+    loadVariants(res).find(
+      (v) => v.headers.authorization !== exclude && required.some((s) => v.scopes.has(s)),
+    ) ?? null
   );
 }
 

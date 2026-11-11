@@ -19,7 +19,7 @@ import { spawn } from 'node:child_process';
 // NOTE: capture.mjs (and with it Playwright) must never be imported
 // statically here — auth.mjs lazy-loads it only when a browser is really
 // needed, so cache-hit commands start fast.
-import { getAuth, clearAuth, loadCachedAuth, refreshAuth } from './auth.mjs';
+import { getAuth, clearAuth, loadCachedAuth, refreshAuth, requiredScopesFrom, variantWithScopes } from './auth.mjs';
 import { call } from './client.mjs';
 import { cacheDir } from './paths.mjs';
 import { printJson, info, errorBlock, debug } from './output.mjs';
@@ -155,6 +155,16 @@ async function runApi(path, init = {}) {
             ? 'Run `outlook auth` to sign in interactively — your session may need MFA or a policy step-up.'
             : `Run \`outlook auth --all\` to re-capture a ${res_} token — your session may need MFA or a policy step-up.`,
       });
+    }
+  }
+  if (res.status === 403) {
+    // Same resource, different app: another cached token may carry the
+    // scope this endpoint needs (see auth.mjs → variants).
+    const needed = requiredScopesFrom(res.body);
+    const alt = needed.length ? variantWithScopes(res_, needed, auth.authorization) : null;
+    if (alt) {
+      debug(`403 missing ${needed.join('|')}; retrying with another cached ${res_} token`);
+      res = await call(alt.headers, path, init);
     }
   }
   if (res.status >= 400) throw httpError(res, method, path);
