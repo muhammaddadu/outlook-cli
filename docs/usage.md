@@ -64,10 +64,46 @@ outlook token-audit       # see which ones actually landed and what they can do
 
 ### `outlook refresh`
 
-Force a fresh Bearer capture even if the cache is still valid. Opens
-Chromium briefly. Use when the on-disk token looks broken or after a CA
-policy change that invalidated the existing JWT. `--all` refreshes every
-resource token.
+Silently renew the cached token(s). Runs a **headless** browser on the
+saved profile and never shows a window or waits for input, so it is safe in
+cron jobs and agents. If the saved session can no longer sign in by itself
+(Microsoft shows a password or account picker for more than ~12s) it fails
+fast with `E_AUTH_REQUIRED`. `--all` refreshes every resource token. When
+`outlook keepalive` is running, `refresh` asks it to reload and reads the
+cache instead of launching a second browser.
+
+The same silent path backs automatic renewal inside normal commands: an
+expired token never pops a window any more. Only `outlook auth` is
+interactive.
+
+### `outlook keepalive`
+
+In many tenants (Yum's included) Entra keeps the SSO session in a *session*
+cookie that dies with the browser process, so any one-shot capture after the
+browser closes needs a password again. `keepalive` does what an
+always-open Chrome does: it keeps one signed-in Chromium running.
+
+```bash
+outlook keepalive            # sign in once in its window; it then minimises
+outlook keepalive --status   # JSON: running, state, last token saves, last error
+outlook keepalive --stop
+outlook keepalive --install-launchd    # start at login and 07:55 on weekdays
+outlook keepalive --uninstall-launchd
+```
+
+- Opens OWA, Teams and Copilot. You sign in once (MFA included); the window
+  then minimises itself, and comes back if Microsoft asks for sign-in again.
+- The web apps renew their own tokens; keepalive writes each fresh Bearer to
+  the normal cache (`auth*.json`), so every other command just reads it.
+- Reloads the tabs every 30 min during working hours (Mon–Fri 07:55–19:00),
+  after the Mac wakes from sleep, and when a tab crashes.
+- Writes `~/.cache/outlook-spike/keepalive.json` with `state`
+  (`signing-in` | `signed-in` | `stopped`), token save times and `lastError`.
+  `outlook token-audit` includes it under `keepalive`.
+- One instance only (pid file). It owns the browser profile while running, so
+  `auth` refuses to start; stop keepalive first if you need `auth`.
+- It never reads or replays cookies or refresh tokens itself — the browser
+  does all authentication, exactly as for the user.
 
 ## Multiple resources: Graph (Teams), Substrate
 

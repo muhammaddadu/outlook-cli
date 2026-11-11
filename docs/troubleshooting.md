@@ -101,6 +101,15 @@ actually click through anything they show. **Fix:** re-run
 before it closes on its own; if a Teams/Copilot tab shows a prompt,
 complete it there too. See LEARNINGS.md §15 for the full story.
 
+### "`outlook refresh` fails with E_AUTH_REQUIRED right after a good `auth`"
+
+The tenant keeps the SSO session in a session cookie (`ESTSAUTH`), which
+Chromium drops when the browser quits; `ESTSAUTHPERSISTENT` exists but isn't
+honoured. Setting "continue where you left off" doesn't help (Chromium
+reverts the pref). Run `outlook keepalive` so one signed-in browser stays
+open, and let it keep the cache fresh. Check it with
+`outlook keepalive --status`.
+
 ### "Chromium flashes on every call"
 
 Token cache isn't being read. Check:

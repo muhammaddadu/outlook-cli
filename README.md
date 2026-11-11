@@ -32,7 +32,7 @@ $ outlook list -n 3 | jq '.value[] | {From: .From.EmailAddress.Name, Subject}'
 | **Mail — write** | `draft`, `draft-reply`, `draft-reply-all`, `draft-forward`, `discard-draft`, `send` | Review-first drafts preferred over direct `send`; `--attach` files (≤3 MB) |
 | **Calendar** | `agenda`, `events`, `event-read`, `calendars`, `event-create`, `event-update`, `event-cancel`, `accept`/`decline`/`tentative`, `free-busy` | Natural time ranges (`today`, `+7d`, `--days 14`); RSVP; availability lookup |
 | **Teams** (via Graph) | `teams`, `teams-channels`, `teams-chats`, `teams-members`, `teams-messages`, `teams-send` | Needs `outlook auth --all`. Listing + sending work; reading message bodies needs `Chat.Read` (may be tenant-blocked) |
-| **Auth / diagnostics** | `auth [--all]`, `refresh`, `logout`, `token-audit`, `graph`, `context`, `learn` | `token-audit` shows which Microsoft resources you can reach; `graph` is a raw authenticated Graph/Substrate passthrough |
+| **Auth / diagnostics** | `auth [--all]`, `refresh`, `keepalive`, `logout`, `token-audit`, `graph`, `context`, `learn` | `token-audit` shows which Microsoft resources you can reach; `graph` is a raw authenticated Graph/Substrate passthrough |
 
 Mail and calendar use your **Outlook** token; Teams uses a **Microsoft Graph**
 token (a separate audience) captured by `outlook auth --all`. **Copilot is not
