@@ -120,7 +120,8 @@ export function startMockServer(handler) {
 export function runCli(args, { env = {}, stdin = null, timeoutMs = 15_000 } = {}) {
   return new Promise((resolveRun, reject) => {
     const child = spawn(process.execPath, [CLI_PATH, ...args], {
-      env: { OUTLOOK_NO_CAPTURE: '1', ...process.env, ...env },
+      // Isolate from a real `outlook keepalive` on the dev machine.
+      env: { OUTLOOK_NO_CAPTURE: '1', OUTLOOK_KEEPALIVE_PID: '/nonexistent/keepalive.pid', OUTLOOK_KEEPALIVE_STATUS: '/nonexistent/keepalive.json', ...process.env, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';

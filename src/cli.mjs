@@ -11,8 +11,8 @@
 //   - STDIN: `send` accepts message JSON via STDIN when no arg is given.
 
 import { Command, CommanderError } from 'commander';
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
+import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
@@ -21,6 +21,7 @@ import { spawn } from 'node:child_process';
 // needed, so cache-hit commands start fast.
 import { getAuth, clearAuth, loadCachedAuth, refreshAuth } from './auth.mjs';
 import { call } from './client.mjs';
+import { cacheDir } from './paths.mjs';
 import { printJson, info, errorBlock, debug } from './output.mjs';
 import { AppError, E, EXIT, exitCodeFor } from './errors.mjs';
 import { buildFilter, buildQuery, resolveFolder, parseCount } from './odata.mjs';
@@ -290,11 +291,69 @@ program
 
 program
   .command('refresh')
-  .description('Force-refresh the cached Bearer token(s) (opens the browser briefly).')
+  .description(
+    'Silently renew the cached Bearer token(s) from the saved sign-in session.\n' +
+      'Runs a headless browser; never shows a window or asks for input. If the\n' +
+      'session has lapsed it fails with E_AUTH_REQUIRED: run `outlook auth` then.',
+  )
   .option('--all', 'refresh every resource token, not just Outlook')
   .action(async (opts) => {
-    await refreshAuth({ waitForAll: !!opts.all, openExtraSurfaces: !!opts.all });
-    info('Token refreshed.');
+    const map = await refreshAuth({
+      silent: true,
+      waitForAll: !!opts.all,
+      openExtraSurfaces: !!opts.all,
+      wantResource: null,
+    });
+    info(`Token(s) refreshed: ${Object.keys(map ?? {}).join(', ') || '(none)'}.`);
+  });
+
+program
+  .command('keepalive')
+  .description(
+    'Keep one signed-in browser running (minimised) so tokens stay fresh all day.\n' +
+      'Sign in once in its window; it then writes fresh Outlook/Graph/Substrate\n' +
+      'tokens to the cache as the web apps renew them, and every other command\n' +
+      'reads the cache. Closing the window or --stop ends it.',
+  )
+  .option('--stop', 'stop the running keepalive')
+  .option('--status', 'print whether keepalive is running (JSON)')
+  .option('--reload-minutes <n>', 'reload the tabs this often during working hours', '30')
+  .option('--install-launchd', 'install a launchd agent: start at login and at 07:55 on weekdays')
+  .option('--uninstall-launchd', 'remove the launchd agent')
+  .action(async (opts) => {
+    const ka = await import('./keepalive.mjs');
+    if (opts.status) {
+      printJson({ ...ka.readKeepaliveStatus(), launchd: existsSync(ka.launchdPlistPath()) });
+      return;
+    }
+    if (opts.stop) {
+      const pid = ka.keepalivePid();
+      if (!pid) return info('keepalive is not running.');
+      process.kill(pid, 'SIGTERM');
+      return info(`Stopped keepalive (pid ${pid}).`);
+    }
+    if (opts.installLaunchd) {
+      const plistPath = ka.launchdPlistPath();
+      mkdirSync(dirname(plistPath), { recursive: true });
+      writeFileSync(
+        plistPath,
+        ka.launchdPlist({
+          nodePath: process.execPath,
+          cliPath: fileURLToPath(import.meta.url),
+          logFile: join(cacheDir(), 'keepalive.log'),
+        }),
+      );
+      await runChildToCompletion('launchctl', ['bootout', `gui/${process.getuid()}/${ka.LAUNCHD_LABEL}`]).catch(() => {});
+      await runChildToCompletion('launchctl', ['bootstrap', `gui/${process.getuid()}`, plistPath]);
+      return info(`Installed ${plistPath}. keepalive starts at login and at 07:55 on weekdays.`);
+    }
+    if (opts.uninstallLaunchd) {
+      const plistPath = ka.launchdPlistPath();
+      await runChildToCompletion('launchctl', ['bootout', `gui/${process.getuid()}/${ka.LAUNCHD_LABEL}`]).catch(() => {});
+      if (existsSync(plistPath)) unlinkSync(plistPath);
+      return info('Removed the keepalive launchd agent.');
+    }
+    await ka.runKeepalive({ reloadMinutes: Number(opts.reloadMinutes) || 30 });
   });
 
 program
@@ -305,8 +364,9 @@ program
       'locally — no network, no browser. Use this to see whether Teams /\n' +
       'Copilot / Graph access is available before calling those commands.',
   )
-  .action(() => {
-    printJson(auditAll());
+  .action(async () => {
+    const { readKeepaliveStatus } = await import('./keepalive.mjs');
+    printJson({ ...auditAll(), keepalive: readKeepaliveStatus() });
   });
 
 // ---------------------------------------------------------------------------

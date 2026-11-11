@@ -53,12 +53,40 @@ export const FORWARDED_HEADERS = [
 
 const LOGIN_URL_RE = /login\.(microsoft|microsoftonline)\.com/;
 
-export async function openContext({ headless = false } = {}) {
+// How long a silent capture tolerates sitting on a login page before
+// deciding the session needs a human.
+export const SILENT_LOGIN_GRACE_MS = 12_000;
+
+export async function openContext({ headless = false, extraArgs = [] } = {}) {
   return chromium.launchPersistentContext(profileDir(), {
     headless,
     viewport: { width: 1280, height: 900 },
     userAgent: DESKTOP_UA,
-    args: ['--disable-blink-features=AutomationControlled'],
+    args: ['--disable-blink-features=AutomationControlled', ...extraArgs],
+  });
+}
+
+/**
+ * Watch every request in `context` and call `onToken(resourceKey, headers)`
+ * for each Bearer token addressed to a known Microsoft resource. Shared by
+ * the one-shot capture and the long-running keepalive.
+ */
+export function attachTokenSniffer(context, onToken) {
+  context.on('request', (req) => {
+    const h = req.headers();
+    if (!h.authorization?.startsWith('Bearer ')) return;
+    let host;
+    try {
+      host = new URL(req.url()).host;
+    } catch {
+      return;
+    }
+    const claims = decodePayload(h.authorization);
+    const key = classifyToken({ aud: claims?.aud, host });
+    if (!key) return;
+    const bag = {};
+    for (const k of FORWARDED_HEADERS) if (h[k]) bag[k] = h[k];
+    onToken(key, bag);
   });
 }
 
@@ -81,6 +109,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * @param {boolean} [opts.waitForAll=false]  sniff the whole window instead of stopping at the first outlook token
  * @param {string}  [opts.target=HOME_URL]   URL to open first
  * @param {boolean} [opts.openExtraSurfaces=false] also open Teams/Copilot tabs (best-effort) to mint their resource tokens
+ * @param {boolean} [opts.silent=false] headless, no user interaction: succeed only if the
+ *   saved SSO session signs in by itself; fail fast with E_AUTH_REQUIRED if a login page
+ *   stays up for SILENT_LOGIN_GRACE_MS (it never shows a window)
  */
 export async function captureAllTokens({
   timeoutMs = 60_000,
@@ -88,9 +119,11 @@ export async function captureAllTokens({
   waitForAll = false,
   target = HOME_URL,
   openExtraSurfaces = false,
+  silent = false,
 } = {}) {
+  if (silent && interactive) throw new Error('silent and interactive are mutually exclusive');
   const extraSurfaces = openExtraSurfaces ? EXTRA_SURFACES : [];
-  const context = await openContext({ headless: false });
+  const context = await openContext({ headless: silent });
   /** @type {Record<string, Record<string,string>>} */
   const found = {};
 
@@ -110,20 +143,7 @@ export async function captureAllTokens({
 
     // Listen context-wide so tokens are captured no matter which tab/popup
     // fires them (Teams and Copilot open their own surfaces).
-    context.on('request', (req) => {
-      const h = req.headers();
-      if (!h.authorization?.startsWith('Bearer ')) return;
-      let host;
-      try {
-        host = new URL(req.url()).host;
-      } catch {
-        return;
-      }
-      const claims = decodePayload(h.authorization);
-      const key = classifyToken({ aud: claims?.aud, host });
-      if (!key) return;
-      const bag = {};
-      for (const k of FORWARDED_HEADERS) if (h[k]) bag[k] = h[k];
+    attachTokenSniffer(context, (key, bag) => {
       found[key] = bag; // keep the most recent headers for each resource
     });
 
@@ -145,7 +165,7 @@ export async function captureAllTokens({
     // since a silent background tab that needed one click (a sign-in
     // prompt, an "allow access" consent screen) is the most common way
     // Graph/Substrate capture fails.
-    if (extraSurfaces.length) {
+    if (extraSurfaces.length && !silent) {
       info(
         `Opened ${extraSurfaces.length} additional tab(s) to reach Teams/Copilot. ` +
           'If either shows a sign-in or "allow access" prompt, complete it there too — ' +
@@ -155,6 +175,7 @@ export async function captureAllTokens({
 
     const deadline = Date.now() + timeoutMs;
     let sawLogin = false;
+    let loginSince = null; // silent mode: when the main tab landed on a login page
     while (Date.now() < deadline) {
       const anyPageOpen = [...trackedPages].some((p) => !p.isClosed());
       if (!anyPageOpen) {
@@ -168,7 +189,20 @@ export async function captureAllTokens({
       if (!page.isClosed()) {
         sawLogin = sawLogin || LOGIN_URL_RE.test(page.url());
       }
-      if (sawLogin && !interactive && !found[DEFAULT_RESOURCE]) {
+      if (silent) {
+        // The silent OAuth hop passes through login.microsoftonline.com and
+        // bounces straight back. Only a login page that *stays* means the
+        // session needs a human.
+        const onLogin = !page.isClosed() && LOGIN_URL_RE.test(page.url());
+        loginSince = onLogin ? (loginSince ?? Date.now()) : null;
+        if (loginSince && Date.now() - loginSince > SILENT_LOGIN_GRACE_MS && !found[DEFAULT_RESOURCE]) {
+          throw new AppError({
+            code: E.AUTH_REQUIRED,
+            message: 'The saved sign-in session has expired; Microsoft is asking for a password.',
+            hint: 'Run `outlook auth --all` once to sign in again (MFA included).',
+          });
+        }
+      } else if (sawLogin && !interactive && !found[DEFAULT_RESOURCE]) {
         throw new AppError({
           code: E.AUTH_REQUIRED,
           message: `OWA redirected to login (${page.url().split('?')[0]}).`,
@@ -177,6 +211,9 @@ export async function captureAllTokens({
       }
       // Fast path: single-resource auto-capture stops as soon as outlook is in.
       if (!waitForAll && found[DEFAULT_RESOURCE]) break;
+      // --all: stop as soon as every resource has a token, instead of
+      // waiting for the window to be closed or the deadline.
+      if (waitForAll && Object.keys(RESOURCES).every((r) => found[r])) break;
       await sleep(150);
     }
 

@@ -207,6 +207,8 @@ test('token-audit reports an expired token as expired, not reachable', async () 
     env: {
       OUTLOOK_TOKEN_CACHE: NO_OUTLOOK,
       OUTLOOK_TOKEN_CACHE_GRAPH: expired,
+      // Isolate from a real substrate token in ~/.cache on the dev machine.
+      OUTLOOK_TOKEN_CACHE_SUBSTRATE: '/nonexistent/substrate.json',
     },
   });
   assert.equal(code, 0);

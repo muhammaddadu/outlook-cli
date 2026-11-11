@@ -21,7 +21,8 @@ import { tokenCacheFile } from './paths.mjs';
 import { debug, info } from './output.mjs';
 import { decodePayload } from './jwt.mjs';
 import { AppError, E } from './errors.mjs';
-import { DEFAULT_RESOURCE, resource } from './resources.mjs';
+import { DEFAULT_RESOURCE, RESOURCES, resource } from './resources.mjs';
+import { keepalivePid, pokeKeepalive, keepaliveOwnsProfileError } from './keepalive.mjs';
 
 // Lazy import — capture.mjs pulls in Playwright (≈80MB of resident memory
 // and a Chromium executable check). Cache-hit calls never hit this code
@@ -47,7 +48,7 @@ async function captureAll(opts) {
     throw new AppError({
       code: E.AUTH_REQUIRED,
       message: 'A fresh token is needed but browser capture is disabled (OUTLOOK_NO_CAPTURE is set).',
-      hint: 'Run `outlook auth` in an environment with a display, or unset OUTLOOK_NO_CAPTURE.',
+      hint: 'Run `outlook auth --all` in an environment with a display, or unset OUTLOOK_NO_CAPTURE.',
     });
   }
   const mod = await import('./capture.mjs');
@@ -121,24 +122,61 @@ export function saveAllAuth(map) {
  * import stays lazy for every command.
  *
  * Returns the headers for `wantResource` (default outlook) so callers that
- * only care about one resource keep their old shape. Every resource observed
+ * only care about one resource keep their old shape; pass `wantResource: null`
+ * to get the whole { resource: headers } map back. Every resource observed
  * during the capture window is persisted regardless.
  */
 export async function refreshAuth({ wantResource = DEFAULT_RESOURCE, ...opts } = {}) {
+  // A running `outlook keepalive` owns the browser profile (Chromium locks
+  // it) and keeps the cache fresh. Ask it to reload and read the cache
+  // instead of launching a second browser.
+  if (!process.env.OUTLOOK_CAPTURE_FIXTURE && keepalivePid()) {
+    return waitForKeepalive(wantResource, opts);
+  }
   const map = await captureAll(opts);
   const saved = saveAllAuth(map);
   debug(`captured tokens for: ${saved.join(', ') || '(none)'}`);
+  if (wantResource === null) return map; // caller wants every resource captured
   return map[wantResource] ?? null;
+}
+
+const KEEPALIVE_WAIT_MS = 90_000;
+
+async function waitForKeepalive(wantResource, { interactive } = {}) {
+  const pid = keepalivePid();
+  if (interactive) {
+    throw new AppError({
+      code: E.AUTH_REQUIRED,
+      message: `\`outlook keepalive\` is running (pid ${pid}) and owns the sign-in browser.`,
+      hint: 'Sign in in its window if it is asking, or stop it first with `outlook keepalive --stop`.',
+    });
+  }
+  pokeKeepalive();
+  const wanted = wantResource === null ? Object.keys(RESOURCES) : [wantResource];
+  const deadline = Date.now() + KEEPALIVE_WAIT_MS;
+  for (;;) {
+    const map = {};
+    for (const r of wanted) {
+      const c = loadCachedAuth(r);
+      if (c) map[r] = c.headers;
+    }
+    if (wantResource === null ? Object.keys(map).length > 0 : map[wantResource]) {
+      return wantResource === null ? map : map[wantResource];
+    }
+    if (Date.now() > deadline) throw keepaliveOwnsProfileError(pid);
+    await new Promise((r) => setTimeout(r, 2_000));
+  }
 }
 
 /**
  * Get headers for an authed API call to `res`. Uses the on-disk cache when
- * the JWT still has > MIN_LIFETIME_MS left; otherwise opens the browser to
- * capture fresh tokens via silent SSO and persists them.
+ * the JWT still has > MIN_LIFETIME_MS left; otherwise runs a *silent*
+ * (headless) capture that succeeds only if the saved SSO session signs in by
+ * itself, and persists every token it sees. No window is ever shown here, so
+ * scheduled/unattended callers are safe; when the session has lapsed this
+ * fails fast with E_AUTH_REQUIRED and the user runs `outlook auth`.
  *
- * For non-default resources we never silently launch the browser mid-command
- * (a `graph` call shouldn't pop Chromium unexpectedly) unless the caller opts
- * in with `capture: true` — the outlook workhorse keeps its auto-capture.
+ * Pass `capture: false` to skip the silent capture entirely.
  */
 export async function getAuth({ resource: res = DEFAULT_RESOURCE, forceRefresh = false, capture } = {}) {
   if (!forceRefresh) {
@@ -150,7 +188,7 @@ export async function getAuth({ resource: res = DEFAULT_RESOURCE, forceRefresh =
     }
   }
 
-  const autoCapture = capture ?? res === DEFAULT_RESOURCE;
+  const autoCapture = capture ?? true;
   if (!autoCapture) {
     const r = resource(res);
     throw new AppError({
@@ -160,8 +198,14 @@ export async function getAuth({ resource: res = DEFAULT_RESOURCE, forceRefresh =
     });
   }
 
-  debug(`refreshing ${res} token via browser`);
-  const headers = await refreshAuth({ wantResource: res });
+  debug(`refreshing ${res} token via silent browser capture`);
+  const headers = await refreshAuth({
+    wantResource: res,
+    silent: true,
+    // Non-outlook tokens are minted by the Teams/Copilot surfaces.
+    waitForAll: res !== DEFAULT_RESOURCE,
+    openExtraSurfaces: res !== DEFAULT_RESOURCE,
+  });
   if (!headers) {
     const r = resource(res);
     throw new AppError({
