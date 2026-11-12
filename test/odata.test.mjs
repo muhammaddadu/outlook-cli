@@ -171,3 +171,12 @@ test('buildQuery wraps $search value in literal quotes (KQL convention)', () => 
   const qs = buildQuery({ search: 'quarterly review' });
   assert.match(qs, /\$search=%22quarterly%20review%22/);
 });
+
+test('buildQuery: search omits a zero $skip and rejects a real offset', async () => {
+  const { buildQuery } = await import('../src/odata.mjs');
+  const q = buildQuery({ top: 5, skip: '0', search: 'Byte Coach' });
+  assert.ok(!q.includes('$skip'), q);
+  assert.ok(q.includes('$search='), q);
+  assert.throws(() => buildQuery({ skip: '10', search: 'x' }), /--skip cannot be combined/);
+  assert.ok(buildQuery({ skip: '10' }).includes('$skip=10'));
+});

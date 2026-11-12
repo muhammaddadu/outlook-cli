@@ -176,7 +176,19 @@ export function buildQuery({
   const add = (key, value) => parts.push(`${key}=${encodeURIComponent(value)}`);
 
   if (top !== undefined && top !== null) add('$top', parseCount(top, '--top'));
-  if (skip !== undefined && skip !== null) add('$skip', parseCount(skip, '--skip'));
+  if (skip !== undefined && skip !== null) {
+    const n = parseCount(skip, '--skip');
+    // Outlook rejects $skip with $search (HTTP 400 SearchWithSkip). A zero
+    // offset is the default, so just omit it; a real offset can't work.
+    if (search && Number(n) > 0) {
+      throw new AppError({
+        code: E.ARGS,
+        message: '--skip cannot be combined with search (the server rejects $skip with $search).',
+        hint: 'Raise -n instead, or use `outlook list --since …` and filter locally.',
+      });
+    }
+    if (!search) add('$skip', n);
+  }
   if (filter) add('$filter', filter);
   if (select) add('$select', select);
   if (search) {
