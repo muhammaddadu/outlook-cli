@@ -1113,8 +1113,22 @@ program
 program
   .command('discard-draft')
   .argument('<id>', 'draft Id to delete')
-  .description('Permanently delete a draft.')
-  .action(async (id) => {
+  .option('--to-trash', 'move the draft to Deleted Items (recoverable) instead of deleting it')
+  .description('Permanently delete a draft (or move it to Deleted Items with --to-trash).')
+  .action(async (id, opts) => {
+    if (opts.toTrash) {
+      const meta = await runApi(`/messages/${encodeURIComponent(id)}?$select=IsDraft`);
+      if (meta?.IsDraft === false) {
+        throw new AppError({ code: E.ARGS, message: 'That message is not a draft; refusing to move it.' });
+      }
+      const moved = await runApi(`/messages/${encodeURIComponent(id)}/move`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ DestinationId: 'DeletedItems' }),
+      });
+      printJson({ trashed: true, DraftId: id, NewId: moved?.Id ?? null });
+      return;
+    }
     // 204 No Content on success; runApi treats that as a non-error and returns
     // an empty body. We synthesise the success payload ourselves.
     await runApi(`/messages/${encodeURIComponent(id)}`, { method: 'DELETE' });

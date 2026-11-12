@@ -735,6 +735,49 @@ test('discard-draft DELETEs the message and prints a success payload', async () 
   }
 });
 
+test('discard-draft --to-trash moves a draft to Deleted Items', async () => {
+  const reqs = [];
+  const mock = await startMockServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      reqs.push({ method: req.method, url: req.url, body });
+      res.writeHead(req.method === 'GET' ? 200 : 201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(req.method === 'GET' ? { IsDraft: true } : { Id: 'MOVED-1' }));
+    });
+  });
+  try {
+    const { code, stdout } = await runCli(['discard-draft', '--to-trash', 'DRAFT-XYZ'], {
+      env: { OUTLOOK_TOKEN_CACHE: seedTokenCache(), OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me` },
+    });
+    assert.equal(code, 0);
+    assert.equal(reqs[1].method, 'POST');
+    assert.equal(reqs[1].url, '/api/v2.0/me/messages/DRAFT-XYZ/move');
+    assert.deepEqual(JSON.parse(reqs[1].body), { DestinationId: 'DeletedItems' });
+    assert.deepEqual(JSON.parse(stdout), { trashed: true, DraftId: 'DRAFT-XYZ', NewId: 'MOVED-1' });
+  } finally {
+    await mock.close();
+  }
+});
+
+test('discard-draft --to-trash refuses a non-draft', async () => {
+  let moved = false;
+  const mock = await startMockServer((req, res) => {
+    if (req.method === 'POST') moved = true;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ IsDraft: false }));
+  });
+  try {
+    const { code } = await runCli(['discard-draft', '--to-trash', 'MSG-1'], {
+      env: { OUTLOOK_TOKEN_CACHE: seedTokenCache(), OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me` },
+    });
+    assert.equal(code, 64);
+    assert.equal(moved, false);
+  } finally {
+    await mock.close();
+  }
+});
+
 test('draft-reply with malformed override JSON exits 64', async () => {
   // Need a working mock so createReply succeeds before PATCH parse fails.
   const mock = await startMockServer((req, res) => {
