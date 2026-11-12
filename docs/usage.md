@@ -301,6 +301,17 @@ outlook draft-reply $ID '{
 }'
 ```
 
+Write `Content` as plain text with `\n` line breaks. The CLI renders it as
+Outlook-web paragraphs (one `<p>` per line, `- ` lines as a bulleted list)
+above the quoted thread, styled with `--style '<css>'`,
+`$OUTLOOK_DRAFT_STYLE`, or Aptos 12pt black by default.
+
+### `outlook draft-update <draftId> [json]`
+
+Rewrite the text above the quoted thread of an existing reply or forward
+draft, keeping the thread. Same body JSON and `--style` as `draft-reply`.
+Refuses to edit a message that isn't a draft. Never sends.
+
 ### `outlook draft-reply-all <id> [json]`
 
 Same as `draft-reply` but addresses every original recipient.

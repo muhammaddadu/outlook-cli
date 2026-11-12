@@ -74,6 +74,7 @@ outlook folders                       # list mail folders
 outlook draft             <json>  [--attach <path>…]   # new draft (reads STDIN if no arg)
 outlook draft-reply       <id>  [json] [--attach <path>…]   # draft reply to a message
 outlook draft-reply-all   <id>  [json] [--attach <path>…]   # draft reply-all
+outlook draft-update      <draftId> [json]                # rewrite the text of an existing draft
 outlook draft-forward     <id>  [json] [--attach <path>…]   # draft a forward
 outlook discard-draft     <id>              # delete a draft
 
@@ -221,11 +222,18 @@ The Outlook REST endpoint does the heavy lifting — it creates a draft
 already addressed to the right recipient with the original thread quoted
 underneath. You only need to provide your new reply body.
 
-Under the hood the CLI sends your text via the API's `Comment` field so
-the server can compose `<your reply>\n\n<quoted thread>` correctly. **Do
-not try to PATCH `Body` directly — that wipes the thread.** If you need
-to set non-body fields (Cc, Subject changes), pass them alongside `Body`
-in the override JSON; the CLI splits them and routes each correctly.
+Write the body as **plain text with real line breaks** (`\n`): greeting,
+blank line, short paragraphs, `- ` lines for bullets, sign-off. The CLI
+creates the reply, then inserts your text above the quoted thread as
+Outlook-web-style paragraphs (`<p>` per line, real `<ul>` lists) in the
+user's font: `--style '<css>'`, else `$OUTLOOK_DRAFT_STYLE`, else Aptos
+12pt black (Outlook web's default). **Do not PATCH `Body` yourself, as that
+wipes the thread.** Pass non-body fields (Cc, Subject changes) alongside
+`Body` in the override JSON; the CLI sends them in the same update.
+
+To revise a draft you already made, use `outlook draft-update <draftId>
+'{"Body":{...}}'`: it replaces only the text above the quoted thread
+and refuses to touch a message that isn't a draft.
 
 ```bash
 # Find the message you're replying to.

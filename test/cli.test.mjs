@@ -564,60 +564,67 @@ test('draft-reply calls createReply and prints the new draft id + WebLink', asyn
   }
 });
 
-test('draft-reply with body override sends Comment in createReply (preserves thread)', async () => {
-  const reqs = [];
-  const mock = await startMockServer((req, res) => {
+const QUOTED =
+  '<html><head></head><body><hr style="display:inline-block; width:98%"><div id="divRplyFwdMsg">From: X</div><div>original</div></body></html>';
+
+function draftMock(reqs) {
+  return (req, res) => {
     let body = '';
     req.on('data', (d) => (body += d));
     req.on('end', () => {
       reqs.push({ method: req.method, url: req.url, body });
-      if (req.url.endsWith('/createReply')) {
-        res.writeHead(201, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ Id: 'REPLY-XYZ' }));
-      } else {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end('{}');
-      }
+      res.writeHead(req.url.endsWith('/createReply') ? 201 : 200, {
+        'Content-Type': 'application/json',
+      });
+      if (req.url.endsWith('/createReply')) res.end(JSON.stringify({ Id: 'REPLY-XYZ' }));
+      else if (req.method === 'GET')
+        res.end(JSON.stringify({ Body: { ContentType: 'HTML', Content: QUOTED } }));
+      else res.end('{}');
     });
-  });
+  };
+}
+
+test('draft-reply puts multi-line text above the quoted thread as styled paragraphs', async () => {
+  const reqs = [];
+  const mock = await startMockServer(draftMock(reqs));
   try {
     const override = JSON.stringify({
-      Body: { ContentType: 'Text', Content: 'thanks — looks great' },
+      Body: { ContentType: 'Text', Content: 'Hi Sam,\n\nThanks — <ok>:\n- one\n- two\n\nBest,\nM' },
     });
     const { code } = await runCli(['draft-reply', 'ORIG-1', override], {
       env: {
         OUTLOOK_TOKEN_CACHE: seedTokenCache(),
         OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+        OUTLOOK_DRAFT_STYLE: 'font-family:Aptos; font-size:12pt',
       },
     });
     assert.equal(code, 0);
-    // Only one call should fire — createReply with Comment. No PATCH, so
-    // the server-populated quoted thread is preserved.
-    assert.equal(reqs.length, 1, 'expected exactly one request (createReply)');
+    assert.equal(reqs.length, 3, 'createReply, GET body, PATCH body');
+    // 1. createReply without a Comment (Comment loses line breaks)
     assert.equal(reqs[0].method, 'POST');
     assert.equal(reqs[0].url, '/api/v2.0/me/messages/ORIG-1/createReply');
-    assert.deepEqual(JSON.parse(reqs[0].body), { Comment: 'thanks — looks great' });
+    assert.equal(reqs[0].body, '');
+    // 2. read the server-built body (holds the quoted thread)
+    assert.equal(reqs[1].method, 'GET');
+    assert.match(reqs[1].url, /\/messages\/REPLY-XYZ\?\$select=Body/);
+    // 3. PATCH HTML: new text first, quoted thread kept
+    assert.equal(reqs[2].method, 'PATCH');
+    const { Body } = JSON.parse(reqs[2].body);
+    assert.equal(Body.ContentType, 'HTML');
+    const html = Body.Content;
+    assert.match(html, /<body><p style="margin:0px; font-family:Aptos; font-size:12pt">Hi Sam,<\/p>/);
+    assert.match(html, /Thanks — &lt;ok&gt;:/);
+    assert.match(html, /<ul style="margin:0px"><li[^>]*>one<\/li><li[^>]*>two<\/li><\/ul>/);
+    assert.ok(html.indexOf('Best,') < html.indexOf('divRplyFwdMsg'), 'reply above quote');
+    assert.match(html, /<div>original<\/div>/);
   } finally {
     await mock.close();
   }
 });
 
-test('draft-reply with non-body overrides still PATCHes those fields', async () => {
+test('draft-reply with non-body overrides PATCHes them with the body in one call', async () => {
   const reqs = [];
-  const mock = await startMockServer((req, res) => {
-    let body = '';
-    req.on('data', (d) => (body += d));
-    req.on('end', () => {
-      reqs.push({ method: req.method, url: req.url, body });
-      if (req.url.endsWith('/createReply')) {
-        res.writeHead(201, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ Id: 'REPLY-XYZ' }));
-      } else {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end('{}');
-      }
-    });
-  });
+  const mock = await startMockServer(draftMock(reqs));
   try {
     const override = JSON.stringify({
       Body: { ContentType: 'Text', Content: 'thanks' },
@@ -630,17 +637,31 @@ test('draft-reply with non-body overrides still PATCHes those fields', async () 
       },
     });
     assert.equal(code, 0);
-    assert.equal(reqs.length, 2);
-    // First: createReply with Comment (body)
-    assert.equal(reqs[0].method, 'POST');
-    assert.equal(reqs[0].url, '/api/v2.0/me/messages/ORIG-1/createReply');
-    assert.deepEqual(JSON.parse(reqs[0].body), { Comment: 'thanks' });
-    // Second: PATCH only the non-body fields
-    assert.equal(reqs[1].method, 'PATCH');
-    assert.equal(reqs[1].url, '/api/v2.0/me/messages/REPLY-XYZ');
-    const patchBody = JSON.parse(reqs[1].body);
-    assert.equal(patchBody.Body, undefined, 'PATCH must not include Body');
+    assert.equal(reqs.length, 3);
+    const patchBody = JSON.parse(reqs[2].body);
     assert.deepEqual(patchBody.CcRecipients, [{ EmailAddress: { Address: 'cc@example.com' } }]);
+    assert.match(patchBody.Body.Content, /font-family:Aptos,Arial,Helvetica,sans-serif/);
+  } finally {
+    await mock.close();
+  }
+});
+
+test('draft-reply with only non-body overrides skips the body read', async () => {
+  const reqs = [];
+  const mock = await startMockServer(draftMock(reqs));
+  try {
+    const override = JSON.stringify({
+      CcRecipients: [{ EmailAddress: { Address: 'cc@example.com' } }],
+    });
+    const { code } = await runCli(['draft-reply', 'ORIG-1', override], {
+      env: {
+        OUTLOOK_TOKEN_CACHE: seedTokenCache(),
+        OUTLOOK_API_BASE: `${mock.url}/api/v2.0/me`,
+      },
+    });
+    assert.equal(code, 0);
+    assert.deepEqual(reqs.map((r) => r.method), ['POST', 'PATCH']);
+    assert.equal(JSON.parse(reqs[1].body).Body, undefined);
   } finally {
     await mock.close();
   }

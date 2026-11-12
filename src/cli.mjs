@@ -40,6 +40,7 @@ import {
   learningsFile,
 } from './learn.mjs';
 import { decodePayload } from './jwt.mjs';
+import { resolveDraftStyle, bodyToFragment, prependToBody, replaceReplyText } from './compose.mjs';
 import {
   buildFileAttachment,
   attachFilesToDraft,
@@ -902,16 +903,18 @@ program
  * `Body` resource, the server REPLACES the body entirely — wiping out
  * the quoted original thread that createReply had just populated.
  *
- * Fix: the user's new reply text goes into the `Comment` field of the
- * createReply request body. The server then writes a draft whose body
- * looks like `<your comment>\n\n<quoted thread>` (or the HTML
- * equivalent), preserving the thread. Other override fields
- * (CcRecipients, Subject changes, etc.) are PATCHed after, since they
- * don't conflict with body composition.
+ * And the `Comment` field (plain text) loses its line breaks when the
+ * server renders the HTML draft, so multi-line replies arrive as one line.
+ *
+ * Fix: create the draft with no Comment, read its HTML body (which already
+ * holds the reply header and quoted thread), insert the new text at the top
+ * as Outlook-web-style paragraphs in the user's font (see compose.mjs), and
+ * PATCH the combined HTML back. Other override fields (CcRecipients,
+ * Subject, etc.) go in the same PATCH.
  *
  * Returns the draft Id and the OWA WebLink (deep link the user can click).
  */
-async function makeDraftFrom(messageId, action, overridesJson, attachPaths = []) {
+async function makeDraftFrom(messageId, action, overridesJson, attachPaths = [], style) {
   // Validate attachment paths BEFORE creating the draft so a bad path
   // doesn't leave an orphan draft in the user's mailbox.
   for (const p of attachPaths) validateAttachPath(p);
@@ -931,37 +934,41 @@ async function makeDraftFrom(messageId, action, overridesJson, attachPaths = [])
     }
   }
 
-  let bodyComment = null;
+  let bodyOverride = null;
   let nonBodyOverrides = null;
   if (overrides) {
     const { Body, ...rest } = overrides;
-    // Comment is plain text per the Outlook API contract. Server formats it
-    // into whatever ContentType matches the thread.
-    if (Body && typeof Body.Content === 'string') {
-      bodyComment = Body.Content;
-    }
-    if (Object.keys(rest).length > 0) {
-      nonBodyOverrides = rest;
-    }
+    if (Body && typeof Body.Content === 'string') bodyOverride = Body;
+    if (Object.keys(rest).length > 0) nonBodyOverrides = rest;
   }
 
-  // ---- 1. createReply / createReplyAll / createForward (with Comment) ----
-  const createInit = { method: 'POST' };
-  if (bodyComment !== null) {
-    createInit.headers = { 'Content-Type': 'application/json' };
-    createInit.body = JSON.stringify({ Comment: bodyComment });
-  }
+  // ---- 1. createReply / createReplyAll / createForward ------------------
   const draft = await runApi(
     `/messages/${encodeURIComponent(messageId)}/${action}`,
-    createInit,
+    { method: 'POST' },
   );
 
-  // ---- 2. PATCH non-body overrides (CcRecipients, Subject, etc.) --------
-  if (nonBodyOverrides) {
+  // ---- 2. Insert the new text above the quoted thread; PATCH overrides --
+  const patch = { ...(nonBodyOverrides ?? {}) };
+  if (bodyOverride) {
+    const css = resolveDraftStyle(style);
+    const current = await runApi(
+      `/messages/${encodeURIComponent(draft.Id)}?$select=Body`,
+    );
+    let existing = current?.Body?.Content ?? '';
+    if (String(current?.Body?.ContentType ?? '').toLowerCase() !== 'html') {
+      existing = `<html><body><pre>${existing.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre></body></html>`;
+    }
+    patch.Body = {
+      ContentType: 'HTML',
+      Content: prependToBody(existing, bodyToFragment(bodyOverride, css), css),
+    };
+  }
+  if (Object.keys(patch).length > 0) {
     await runApi(`/messages/${encodeURIComponent(draft.Id)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(nonBodyOverrides),
+      body: JSON.stringify(patch),
     });
   }
 
@@ -1019,6 +1026,7 @@ program
     '[json]',
     'partial Message override (e.g. {"Body":{"ContentType":"Text","Content":"…"}}); reads STDIN if omitted',
   )
+  .option('--style <css>', 'CSS for the body text (default: $OUTLOOK_DRAFT_STYLE or Aptos 12pt)')
   .option('-a, --attach <path>', 'attach a local file (repeatable, ≤3MB each)', collectAttach)
   .description(
     'Create a draft reply to a message. Outlook automatically fills in the\n' +
@@ -1026,29 +1034,71 @@ program
   )
   .action(async (id, jsonArg, opts) => {
     const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
-    printJson(await makeDraftFrom(id, 'createReply', raw, opts.attach ?? []));
+    printJson(await makeDraftFrom(id, 'createReply', raw, opts.attach ?? [], opts.style));
   });
 
 program
   .command('draft-reply-all')
   .argument('<id>', 'message Id to reply-all to')
   .argument('[json]', 'partial Message override; STDIN if omitted')
+  .option('--style <css>', 'CSS for the body text (default: $OUTLOOK_DRAFT_STYLE or Aptos 12pt)')
   .option('-a, --attach <path>', 'attach a local file (repeatable, ≤3MB each)', collectAttach)
   .description('Like `draft-reply`, but addresses everyone on the original thread.')
   .action(async (id, jsonArg, opts) => {
     const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
-    printJson(await makeDraftFrom(id, 'createReplyAll', raw, opts.attach ?? []));
+    printJson(await makeDraftFrom(id, 'createReplyAll', raw, opts.attach ?? [], opts.style));
+  });
+
+program
+  .command('draft-update')
+  .argument('<draftId>', 'Id of an existing reply/forward draft')
+  .argument('[json]', '{"Body":{"ContentType":"Text","Content":"…"}}; STDIN if omitted')
+  .option('--style <css>', 'CSS for the body text (default: $OUTLOOK_DRAFT_STYLE or Aptos 12pt)')
+  .description(
+    'Rewrite the new text of an existing reply/forward draft (above the\n' +
+      'quoted thread), keeping the thread. Does NOT send.',
+  )
+  .action(async (draftId, jsonArg, opts) => {
+    const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
+    let Body;
+    try {
+      ({ Body } = JSON.parse(raw || '{}'));
+    } catch (cause) {
+      throw new AppError({ code: E.ARGS, message: 'Payload was not valid JSON.', cause });
+    }
+    if (!Body || typeof Body.Content !== 'string') {
+      throw new AppError({ code: E.ARGS, message: 'Pass {"Body":{"ContentType":"Text","Content":"…"}}.' });
+    }
+    const css = resolveDraftStyle(opts.style);
+    const id = encodeURIComponent(draftId);
+    const current = await runApi(`/messages/${id}?$select=Body,IsDraft,Subject`);
+    if (current?.IsDraft === false) {
+      throw new AppError({ code: E.ARGS, message: 'That message is not a draft; refusing to edit it.' });
+    }
+    const existing = String(current?.Body?.Content ?? '');
+    const fragment = bodyToFragment(Body, css);
+    const isHtml = String(current?.Body?.ContentType ?? '').toLowerCase() === 'html';
+    const Content =
+      (isHtml && replaceReplyText(existing, fragment, css)) ??
+      `<html><body>${fragment}</body></html>`;
+    await runApi(`/messages/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ Body: { ContentType: 'HTML', Content } }),
+    });
+    printJson({ DraftId: draftId, Subject: current?.Subject ?? null, message: 'Draft updated (not sent).' });
   });
 
 program
   .command('draft-forward')
   .argument('<id>', 'message Id to forward')
   .argument('[json]', 'partial Message override (typically ToRecipients + Body); STDIN if omitted')
+  .option('--style <css>', 'CSS for the body text (default: $OUTLOOK_DRAFT_STYLE or Aptos 12pt)')
   .option('-a, --attach <path>', 'attach a local file (repeatable, ≤3MB each)', collectAttach)
   .description('Create a draft forward of a message.')
   .action(async (id, jsonArg, opts) => {
     const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
-    printJson(await makeDraftFrom(id, 'createForward', raw, opts.attach ?? []));
+    printJson(await makeDraftFrom(id, 'createForward', raw, opts.attach ?? [], opts.style));
   });
 
 program
