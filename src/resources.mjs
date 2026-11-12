@@ -65,8 +65,12 @@ export const RESOURCES = Object.freeze({
     base: '',
     envBase: 'OUTLOOK_SHAREPOINT_BASE',
     audiences: [],
+    // Three audience forms seen live (2026-11-12): the host URL, the
+    // host-bound "<spo-app-guid>/<host>@<tenant>", and the tenant-wide
+    // "<spo-app-guid>" / "<spo-app-guid>@<tenant>" (OneDrive web and Teams
+    // web both send the tenant-wide form to the -my host).
     audiencePattern:
-      /^(https:\/\/[a-z0-9-]+-my\.sharepoint\.com\/?|00000003-0000-0ff1-ce00-000000000000\/[a-z0-9-]+-my\.sharepoint\.com@.*)$/i,
+      /^(https:\/\/[a-z0-9-]+-my\.sharepoint\.com\/?|00000003-0000-0ff1-ce00-000000000000(\/[a-z0-9-]+-my\.sharepoint\.com)?(@.*)?)$/i,
     host: '',
     hostPattern: /^[a-z0-9-]+-my\.sharepoint\.com$/i,
     label: 'OneDrive / SharePoint (meeting recordings, transcripts)',

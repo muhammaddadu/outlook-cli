@@ -182,6 +182,7 @@ test('token-audit classifies a live token and lists it as reachable', async () =
       OUTLOOK_TOKEN_CACHE: NO_OUTLOOK,
       OUTLOOK_TOKEN_CACHE_GRAPH: graphCache,
       OUTLOOK_TOKEN_CACHE_SUBSTRATE: '/nonexistent/substrate.json',
+      OUTLOOK_TOKEN_CACHE_SHAREPOINT: '/nonexistent/sharepoint.json',
     },
   });
   assert.equal(code, 0);
@@ -209,6 +210,7 @@ test('token-audit reports an expired token as expired, not reachable', async () 
       OUTLOOK_TOKEN_CACHE_GRAPH: expired,
       // Isolate from a real substrate token in ~/.cache on the dev machine.
       OUTLOOK_TOKEN_CACHE_SUBSTRATE: '/nonexistent/substrate.json',
+      OUTLOOK_TOKEN_CACHE_SHAREPOINT: '/nonexistent/sharepoint.json',
     },
   });
   assert.equal(code, 0);

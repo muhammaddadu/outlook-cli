@@ -83,7 +83,12 @@ export function attachTokenSniffer(context, onToken) {
     }
     const claims = decodePayload(h.authorization);
     const key = classifyToken({ aud: claims?.aud, host });
-    if (!key) return;
+    if (!key) {
+      // Audience + host only (never the token): shows which surface mints
+      // what when a resource we expect never gets captured.
+      debug(`unclassified bearer aud=${claims?.aud ?? '?'} appid=${claims?.appid ?? '?'} host=${host}`);
+      return;
+    }
     const bag = {};
     for (const k of FORWARDED_HEADERS) if (h[k]) bag[k] = h[k];
     onToken(key, bag);

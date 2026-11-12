@@ -34,6 +34,10 @@ test('classifyToken files OneDrive (-my) tokens under sharepoint, in both audien
     classifyToken({ aud: '00000003-0000-0ff1-ce00-000000000000/contoso-my.sharepoint.com@tenant-id' }),
     'sharepoint',
   );
+  // Tenant-wide forms (OneDrive web and Teams web use these).
+  assert.equal(classifyToken({ aud: '00000003-0000-0ff1-ce00-000000000000' }), 'sharepoint');
+  assert.equal(classifyToken({ aud: '00000003-0000-0ff1-ce00-000000000000@tenant-id' }), 'sharepoint');
+  assert.equal(classifyToken({ aud: '00000003-0000-0ff1-ce00-000000000000/contoso.sharepoint.com@t' }), null);
 });
 
 test('classifyToken ignores team-site SharePoint tokens', () => {

@@ -412,6 +412,15 @@ keepalive open the user's OneDrive, whose web app calls SharePoint with its
 own Bearer. `transcripts` lists via Graph; `transcript` reads the text via
 SharePoint v2.1 (`streamContent?format=json`, VTT as fallback).
 
+**Live result (same day):** the first try captured nothing, because the
+pattern only accepted host-bound audiences. Logging unclassified Bearers
+(aud + host only, `outlook --debug keepalive`) showed the -my host gets
+*tenant-wide* tokens: `00000003-0000-0ff1-ce00-000000000000@<tenant>` from
+the OneDrive page and a bare `00000003-0000-0ff1-ce00-000000000000` from
+Teams web. Both are now classified as `sharepoint`, and
+`outlook transcript` returned a 6-speaker transcript (JSON format; VTT
+fallback not needed). Restarting the keepalive did not need a new sign-in.
+
 **Don't:** copy the browser profile to a second Chromium to mint the token
 (that is cookie extraction by another name), or chase the Graph transcript
 scopes (consent wall, §1–4).
