@@ -991,12 +991,21 @@ program
   .command('draft')
   .argument('[json]', 'Outlook Message JSON; reads STDIN if omitted')
   .option('-a, --attach <path>', 'attach a local file (repeatable, ≤3MB each)', collectAttach)
+  .option('--style <css>', 'CSS for the body text (default: Aptos 12pt black, or $OUTLOOK_DRAFT_STYLE)')
   .description(
     'Create a new draft (does NOT send). Same JSON shape as `send`. The\n' +
-      'draft appears in your Drafts folder for review.',
+      'draft appears in your Drafts folder for review. A Text body is turned\n' +
+      'into Outlook-web paragraphs and bullets in your draft font.',
   )
   .action(async (jsonArg, opts) => {
     const message = await readJsonPayload(jsonArg, 'message');
+    if (message.Body && String(message.Body.ContentType ?? 'Text').toLowerCase() !== 'html') {
+      const css = resolveDraftStyle(opts.style);
+      message.Body = {
+        ContentType: 'HTML',
+        Content: `<html><body>${bodyToFragment(message.Body, css)}</body></html>`,
+      };
+    }
     // Validate attachments upfront so a bad path fails before we create
     // an empty orphan draft.
     if (opts.attach?.length) {

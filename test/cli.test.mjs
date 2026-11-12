@@ -517,7 +517,10 @@ test('draft posts to /messages with the user-supplied JSON', async () => {
     assert.equal(code, 0);
     assert.equal(captured.method, 'POST');
     assert.equal(captured.url, '/api/v2.0/me/messages');
-    assert.equal(JSON.parse(captured.body).Subject, 'draft me');
+    const sent = JSON.parse(captured.body);
+    assert.equal(sent.Subject, 'draft me');
+    assert.equal(sent.Body.ContentType, 'HTML');
+    assert.match(sent.Body.Content, /<body><p style="margin:0px; font-family:Aptos[^"]*">hello<\/p><\/body>/);
 
     const out = JSON.parse(stdout);
     assert.equal(out.DraftId, 'DRAFT123');
