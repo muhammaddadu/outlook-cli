@@ -19,13 +19,13 @@ import { spawn } from 'node:child_process';
 // NOTE: capture.mjs (and with it Playwright) must never be imported
 // statically here — auth.mjs lazy-loads it only when a browser is really
 // needed, so cache-hit commands start fast.
-import { getAuth, clearAuth, loadCachedAuth, refreshAuth, requiredScopesFrom, variantWithScopes } from './auth.mjs';
+import { getAuth, clearAuth, loadCachedAuth, loadVariants, refreshAuth, requiredScopesFrom, variantWithScopes } from './auth.mjs';
 import { call } from './client.mjs';
 import { cacheDir } from './paths.mjs';
 import { printJson, info, errorBlock, debug } from './output.mjs';
 import { AppError, E, EXIT, exitCodeFor } from './errors.mjs';
 import { buildFilter, buildQuery, resolveFolder, parseCount } from './odata.mjs';
-import { RESOURCES } from './resources.mjs';
+import { RESOURCES, resourceBase, audienceOrigin } from './resources.mjs';
 import { auditAll } from './audit.mjs';
 import {
   resolveEventRange,
@@ -40,6 +40,20 @@ import {
   learningsFile,
 } from './learn.mjs';
 import { decodePayload } from './jwt.mjs';
+import {
+  MEETING_FILE_RE,
+  ITEM_SELECT,
+  toListing,
+  mergeListings,
+  decodeRecordingId,
+  driveItemPath,
+  entriesFromJson,
+  entriesFromVtt,
+  mergeTurns,
+  toText,
+  pickTranscript,
+  subjectFromName,
+} from './transcripts.mjs';
 import { resolveDraftStyle, bodyToFragment, prependToBody, replaceReplyText } from './compose.mjs';
 import {
   buildFileAttachment,
@@ -391,6 +405,7 @@ program
   .argument('[json]', 'request body for POST/PATCH/PUT; reads STDIN if omitted')
   .option('-X, --method <verb>', 'HTTP method (GET, POST, PATCH, PUT, DELETE)', 'GET')
   .option('--resource <name>', `target resource: ${Object.keys(RESOURCES).join(' | ')}`, 'graph')
+  .option('--beta', 'use the Graph beta endpoint instead of v1.0')
   .description(
     'Authenticated passthrough to Microsoft Graph (or another resource via\n' +
       '--resource). Requires a token for that resource: run `outlook auth --all`\n' +
@@ -406,6 +421,13 @@ program
     }
     const method = opts.method.toUpperCase();
     const init = { method, resource: opts.resource };
+    if (opts.beta) {
+      if (opts.resource !== 'graph') {
+        throw new AppError({ code: E.ARGS, message: '--beta only applies to --resource graph.', hint: 'Drop --beta or use --resource graph.' });
+      }
+      // Swap the trailing version segment so OUTLOOK_GRAPH_BASE (tests) keeps working.
+      init.base = resourceBase('graph').replace(/\/v1\.0$/, '/beta');
+    }
     if (method !== 'GET' && method !== 'DELETE') {
       // Body is optional (some Graph actions take none); only attach if given.
       const raw = jsonArg ?? (process.stdin.isTTY ? '' : await readStdin());
@@ -522,6 +544,211 @@ program
       }),
     });
     printJson({ sent: true, MessageId: body?.id ?? null, ChatId: chatId });
+  });
+
+// ---------------------------------------------------------------------------
+// Teams meeting recordings and transcripts. Listing uses Graph (the
+// recordings are OneDrive files); the transcript text needs a SharePoint
+// token, which the keepalive captures from its OneDrive tab. Read-only:
+// every call here is a GET. See transcripts.mjs for why Graph alone can't
+// return the text.
+
+/** Follow @odata.nextLink (absolute URLs) for up to `maxPages` pages. */
+async function graphPages(path, maxPages = 5) {
+  const base = resourceBase('graph');
+  const out = [];
+  let next = path;
+  for (let page = 0; next && page < maxPages; page++) {
+    const body = await gget(next);
+    out.push(...(body?.value ?? []));
+    const link = body?.['@odata.nextLink'];
+    next = link && link.startsWith(base) ? link.slice(base.length) : null;
+  }
+  return out;
+}
+
+/** Run `fn` over `items` with at most `limit` in flight. */
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let i = 0;
+  const worker = async () => {
+    while (i < items.length) {
+      const k = i++;
+      out[k] = await fn(items[k]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+function parseSince(value, fallbackDays) {
+  if (value === undefined) return new Date(Date.now() - fallbackDays * 86_400_000);
+  const rel = /^(\d+)d$/i.exec(value);
+  const d = rel ? new Date(Date.now() - Number(rel[1]) * 86_400_000) : new Date(value);
+  if (Number.isNaN(d.getTime())) {
+    throw new AppError({
+      code: E.ARGS,
+      message: `Invalid --since: ${value}`,
+      hint: 'Use an ISO date/time (2026-11-01, 2026-11-01T09:00:00Z) or a day count like 7d.',
+    });
+  }
+  return d;
+}
+
+program
+  .command('transcripts')
+  .description(
+    'List recent Teams meeting recordings, newest first: your own (OneDrive\n' +
+      '/Recordings) and ones shared with you. By default only meetings with a\n' +
+      'transcript. Each row has iCalUid/threadId to match calendar events and\n' +
+      'meeting chats; pass its id to `outlook transcript`.',
+  )
+  .option('--since <date>', 'only meetings recorded on/after this ISO date, or Nd (default 14d)')
+  .option('-n, --top <count>', 'maximum rows to return', '50')
+  .option('--all', 'include recordings without a transcript')
+  .option('--mine', 'only recordings in your own OneDrive (skip shared-with-me)')
+  .action(async (opts) => {
+    const since = parseSince(opts.since, 14);
+    const top = parseCount(opts.top, '--top');
+    const recent = (iso) => iso && Date.parse(iso) >= since.getTime();
+
+    const own = await graphPages(
+      `/me/drive/root:/Recordings:/children?$top=200&$select=${ITEM_SELECT}`,
+    );
+    const rows = own
+      .filter((it) => MEETING_FILE_RE.test(it.name ?? ''))
+      .map((it) => toListing(it, 'me'));
+
+    if (!opts.mine) {
+      let shared = [];
+      try {
+        shared = await graphPages('/me/drive/sharedWithMe?$top=200', 3);
+      } catch (err) {
+        info(`warning: could not list shared recordings (${err.message}); showing your own only.`);
+      }
+      const candidates = shared.filter(
+        (s) => MEETING_FILE_RE.test(s.name ?? '') && recent(s.remoteItem?.createdDateTime ?? s.createdDateTime),
+      );
+      // sharedWithMe omits source/media, so re-read each candidate.
+      const detailed = await mapLimit(candidates, 6, async (s) => {
+        const ref = { driveId: s.remoteItem?.parentReference?.driveId, itemId: s.remoteItem?.id ?? s.id };
+        try {
+          return toListing(await gget(`${driveItemPath(ref)}?$select=${ITEM_SELECT}`), 'shared');
+        } catch (err) {
+          debug(`skip shared ${s.name}: ${err.message}`);
+          return null;
+        }
+      });
+      rows.push(...detailed.filter(Boolean));
+    }
+
+    const out = mergeListings(rows)
+      .filter((r) => recent(r.startedAt))
+      .filter((r) => opts.all || r.hasTranscript)
+      .slice(0, top);
+    printJson({ since: since.toISOString(), count: out.length, value: out });
+  });
+
+/** Cached SharePoint tokens, preferring one minted for `origin`. */
+function sharepointAuth(origin) {
+  const all = [loadCachedAuth('sharepoint'), ...loadVariants('sharepoint')].filter(Boolean);
+  const forHost = all.find((a) => audienceOrigin(decodePayload(a.headers.authorization)?.aud) === origin);
+  const pick = forHost ?? all[0];
+  if (!pick) {
+    throw new AppError({
+      code: E.AUTH_REQUIRED,
+      message: 'No SharePoint (OneDrive) token cached; transcript text needs one.',
+      hint:
+        'The keepalive captures it from its OneDrive tab. If `outlook token-audit` shows sharepoint ' +
+        'absent, restart `outlook keepalive` (needs a sign-in) so it opens OneDrive, then retry.',
+    });
+  }
+  return pick.headers;
+}
+
+async function sharepointGet(auth, origin, path) {
+  const base = process.env.OUTLOOK_SHAREPOINT_BASE ?? origin;
+  const res = await call(auth, path, { resource: 'sharepoint', base });
+  if (res.status === 401) {
+    throw new AppError({
+      code: E.AUTH_REQUIRED,
+      message: `SharePoint rejected the cached token (HTTP 401) for ${origin}.`,
+      hint: 'The keepalive renews it when its OneDrive tab reloads; run `outlook refresh --all` or wait for the next reload, then retry.',
+    });
+  }
+  if (res.status >= 400) throw httpError(res, 'GET', path);
+  return res.body;
+}
+
+program
+  .command('transcript')
+  .argument('<id>', 'recording id from `outlook transcripts` ("<driveId>:<itemId>", or an item id in your own OneDrive)')
+  .description(
+    'Print a Teams meeting transcript with speaker names and timestamps.\n' +
+      'Needs a SharePoint token (captured by `outlook keepalive`).',
+  )
+  .option('--format <fmt>', 'json (default) or text ("[hh:mm:ss] Speaker: words" lines)', 'json')
+  .option('--raw', 'keep every utterance instead of merging consecutive lines by the same speaker')
+  .option('--transcript-id <tid>', 'a specific transcript when the meeting has several')
+  .action(async (id, opts) => {
+    if (!['json', 'text'].includes(opts.format)) {
+      throw new AppError({ code: E.ARGS, message: `Unknown --format: ${opts.format}`, hint: 'Use json or text.' });
+    }
+    const ref = decodeRecordingId(id);
+    const item = await gget(`${driveItemPath(ref)}?$select=${ITEM_SELECT}`);
+    const driveId = ref.driveId ?? item.parentReference?.driveId;
+    let origin;
+    try {
+      origin = new URL(item.webUrl).origin;
+    } catch {
+      throw new AppError({ code: E.UNEXPECTED, message: 'Graph returned no webUrl for this recording.', hint: 'Check the id with `outlook transcripts`.' });
+    }
+    const auth = sharepointAuth(origin);
+    const itemPath = `/_api/v2.1/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(item.id)}`;
+    const list = await sharepointGet(auth, origin, `${itemPath}/media/transcripts`);
+    const transcripts = list?.value ?? [];
+    const chosen = pickTranscript(transcripts, opts.transcriptId);
+    if (!chosen) {
+      throw new AppError({
+        code: E.HTTP,
+        message: opts.transcriptId
+          ? `Transcript ${opts.transcriptId} not found on this recording.`
+          : 'This recording has no transcript.',
+        hint: transcripts.length ? `Available: ${transcripts.map((t) => t.id).join(', ')}` : 'Transcription was probably not turned on for this meeting.',
+      });
+    }
+    const contentPath = `${itemPath}/media/transcripts/${encodeURIComponent(chosen.id)}/streamContent`;
+    let entries;
+    const json = await sharepointGet(auth, origin, `${contentPath}?format=json`).catch((err) => {
+      debug(`json transcript failed (${err.message}); falling back to VTT`);
+      return null;
+    });
+    if (json && typeof json === 'object' && Array.isArray(json.entries)) {
+      entries = entriesFromJson(json);
+    } else {
+      const vtt = typeof json === 'string' ? json : await sharepointGet(auth, origin, contentPath);
+      entries = entriesFromVtt(typeof vtt === 'string' ? vtt : '');
+    }
+    if (!opts.raw) entries = mergeTurns(entries);
+
+    if (opts.format === 'text') {
+      process.stdout.write(`${toText(entries)}\n`);
+      return;
+    }
+    const media = item.media ?? {};
+    printJson({
+      id: driveId ? `${driveId}:${item.id}` : item.id,
+      subject: subjectFromName(item.name),
+      startedAt: media.recordingStartDateTime ?? item.createdDateTime ?? null,
+      endedAt: media.recordingEndDateTime ?? null,
+      iCalUid: item.source?.iCalUid ?? null,
+      threadId: item.source?.threadId ?? null,
+      transcriptId: chosen.id,
+      language: chosen.languageTag ?? chosen.spokenLanguageTag ?? null,
+      speakers: [...new Set(entries.map((e) => e.speaker).filter(Boolean))],
+      entryCount: entries.length,
+      entries,
+    });
   });
 
 // ---------------------------------------------------------------------------

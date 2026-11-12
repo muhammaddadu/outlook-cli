@@ -1,6 +1,6 @@
 ---
 name: outlook
-description: Read, search, triage, draft, and send mail PLUS view and manage calendar events through the user's Outlook / Microsoft 365 mailbox, PLUS list Microsoft Teams (teams, channels, chats, members) and post Teams chat messages via Graph. Use when the user asks to check inbox, summarise unread mail, find a specific email, draft a reply they can review, send mail, view their calendar / agenda, find what meetings they have today / this week, create or update calendar events, RSVP to invites, check free/busy, list their Teams / chats, or send a Teams message. Teams needs `outlook auth --all`; reading Teams message bodies may be blocked by tenant scope. Copilot is not supported (streaming protocol). Prefer drafts (`draft`, `draft-reply`, `draft-reply-all`, `draft-forward`) over direct send so the user can review in Outlook first. Confirm with the user before creating or cancelling events with attendees (invitations / cancellations send IMMEDIATELY). Requires the `outlook` CLI to be installed on the user's PATH; if it is not, tell the user and stop. All output is JSON to stdout; pipe through `jq` for transformation. This skill does NOT cover Gmail, IMAP, or other mail providers.
+description: Read, search, triage, draft, and send mail PLUS view and manage calendar events through the user's Outlook / Microsoft 365 mailbox, PLUS list Microsoft Teams (teams, channels, chats, members) and post Teams chat messages via Graph, PLUS list Teams meeting recordings and read their transcripts. Use when the user asks to check inbox, summarise unread mail, find a specific email, draft a reply they can review, send mail, view their calendar / agenda, find what meetings they have today / this week, create or update calendar events, RSVP to invites, check free/busy, list their Teams / chats, send a Teams message, or find what was said in a past meeting (transcripts). Teams needs `outlook auth --all`; reading Teams message bodies may be blocked by tenant scope. Copilot is not supported (streaming protocol). Prefer drafts (`draft`, `draft-reply`, `draft-reply-all`, `draft-forward`) over direct send so the user can review in Outlook first. Confirm with the user before creating or cancelling events with attendees (invitations / cancellations send IMMEDIATELY). Requires the `outlook` CLI to be installed on the user's PATH; if it is not, tell the user and stop. All output is JSON to stdout; pipe through `jq` for transformation. This skill does NOT cover Gmail, IMAP, or other mail providers.
 ---
 
 # Using the `outlook` CLI
@@ -112,9 +112,13 @@ outlook teams-members <chatId>        # members of a chat
 outlook teams-messages <chatId>       # read chat messages (needs Chat.Read; may 403)
 outlook teams-send <chatId> "<text>"  # post a message (SENDS immediately — confirm first)
 
+# Meeting transcripts (read-only)
+outlook transcripts [--since 7d|<ISO>] [-n N] [--all] [--mine]   # recent meetings with a transcript
+outlook transcript '<id>' [--format text] [--raw]                # speaker-attributed text
+
 # Advanced: raw Graph / Substrate passthrough
 outlook token-audit                   # which resources (Outlook/Graph/Substrate) are reachable + scopes (no network)
-outlook graph <path> [json] [-X GET]  # authenticated Graph passthrough
+outlook graph <path> [json] [-X GET] [--beta]  # authenticated Graph passthrough (--beta: Graph beta)
 
 # Self-learning (call at session start, then append observations)
 outlook context                       # user info + accumulated learnings (no network)
@@ -447,6 +451,30 @@ needs a Graph token, captured by `outlook auth --all` (opens a browser —
   text with the user first, exactly as you would before `send` for email.
 - For anything without a friendly verb, `outlook graph <path>` is a raw
   authenticated Graph proxy.
+
+## Meeting transcripts
+
+Use these to find out what was said in a past Teams meeting (prep for a
+follow-up, who committed to what).
+
+```bash
+outlook transcripts --since 7d | jq '.value[] | {id, subject, startedAt, owner}'
+outlook transcript '<id>' --format text     # compact: "[hh:mm:ss] Speaker: words"
+outlook transcript '<id>' | jq '.speakers'  # JSON with entries[{speaker,start,end,text}]
+```
+
+- Rows carry `iCalUid` and `threadId`: match `iCalUid` to a calendar event's
+  `ICalUId` (from `outlook events`/`event-read`) to find the previous
+  occurrence of a recurring meeting, or `threadId` to the meeting chat.
+- Quote ids: they look like `b!xxxx:01YYYY` and the shell treats `!` specially.
+- `transcripts` needs only the Graph token. `transcript` also needs a
+  `sharepoint` token, captured by `outlook keepalive` from its OneDrive tab.
+  If it exits 2 saying no SharePoint token is cached, tell the user; never
+  start, stop or sign in the keepalive yourself.
+- Transcripts are verbatim speech and can be long: prefer `--format text`
+  and summarise; don't paste them into drafts or files wholesale.
+- Not available: Copilot / intelligent recap notes, and recordings of channel
+  meetings (stored in team sites).
 
 ## Copilot
 

@@ -122,7 +122,13 @@ export async function captureAllTokens({
   silent = false,
 } = {}) {
   if (silent && interactive) throw new Error('silent and interactive are mutually exclusive');
-  const extraSurfaces = openExtraSurfaces ? EXTRA_SURFACES : [];
+  let extraSurfaces = openExtraSurfaces ? [...EXTRA_SURFACES] : [];
+  if (openExtraSurfaces) {
+    // OneDrive mints the SharePoint (transcripts) token; see surfaces.mjs.
+    const { oneDriveSurface } = await import('./surfaces.mjs');
+    const oneDrive = await oneDriveSurface();
+    if (oneDrive) extraSurfaces.push(oneDrive);
+  }
   const context = await openContext({ headless: silent });
   /** @type {Record<string, Record<string,string>>} */
   const found = {};
@@ -167,7 +173,7 @@ export async function captureAllTokens({
     // Graph/Substrate capture fails.
     if (extraSurfaces.length && !silent) {
       info(
-        `Opened ${extraSurfaces.length} additional tab(s) to reach Teams/Copilot. ` +
+        `Opened ${extraSurfaces.length} additional tab(s) to reach Teams/Copilot/OneDrive. ` +
           'If either shows a sign-in or "allow access" prompt, complete it there too — ' +
           'leave every tab open until this command finishes on its own.',
       );

@@ -390,6 +390,34 @@ run, watching for the new tab-guidance message and confirming
 
 ---
 
+## 16. Meeting transcripts: Graph lists them, only SharePoint serves the text
+
+**Date:** 2026-11-12. **Goal:** let agents read what was said in past Teams
+meetings.
+
+What we tried, with the tokens the web apps mint:
+
+| Call | Result |
+| --- | --- |
+| Graph `/me/drive/root:/Recordings:/children`, `/me/drive/sharedWithMe` | Works. Recordings are driveItems with `source.iCalUid` / `source.threadId`; `media.mediaSource.contentType` is `Transcript` when one is attached. |
+| Graph `/me/onlineMeetings/{id}` (id = base64 `1*<organizerOid>*0**<threadId>`) | Works with the One Outlook Web Graph token (`OnlineMeetings.Read`). The Teams-web token 403s. |
+| Graph `/me/onlineMeetings/{id}/transcripts` | 403: needs `OnlineMeetingTranscript.Read.All`; no web app's token has it. `/recordings` likewise. |
+| Graph `/drives/{d}/items/{i}/media/transcripts` (v1.0 and beta) | 400 "Unsupported segment type". |
+| Graph beta `/me/onlineMeetings/{id}/aiInsights`, `/copilot/users/{id}/onlineMeetings/{id}/aiInsights` | 404 / 403 (missing scope). Copilot recap notes are not reachable. |
+| SharePoint `https://<tenant>-my.sharepoint.com/_api/v2.1/drives/{d}/items/{i}/media/transcripts` with any Graph/Outlook/Substrate token | 401 `invalidAudienceUri`: it needs a SharePoint-audience token. |
+
+**Decision:** add a `sharepoint` resource (audience = the tenant's `-my`
+host, matched by pattern since the host is per-tenant) and have the
+keepalive open the user's OneDrive, whose web app calls SharePoint with its
+own Bearer. `transcripts` lists via Graph; `transcript` reads the text via
+SharePoint v2.1 (`streamContent?format=json`, VTT as fallback).
+
+**Don't:** copy the browser profile to a second Chromium to mint the token
+(that is cookie extraction by another name), or chase the Graph transcript
+scopes (consent wall, §1–4).
+
+---
+
 ## Rules summarised
 
 1. Admin consent on `Mail.*` is a wall. There is no clever way around it.

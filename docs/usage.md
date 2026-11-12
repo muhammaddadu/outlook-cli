@@ -91,7 +91,9 @@ outlook keepalive --install-launchd    # start at login and 07:55 on weekdays
 outlook keepalive --uninstall-launchd
 ```
 
-- Opens OWA, Teams and Copilot. You sign in once (MFA included); the window
+- Opens OWA, Teams, Copilot and your OneDrive (its URL comes from Graph, so
+  OneDrive joins from the first start that finds a Graph token cached). You
+  sign in once (MFA included); the window
   then minimises itself, and comes back if Microsoft asks for sign-in again.
 - The web apps renew their own tokens; keepalive writes each fresh Bearer to
   the normal cache (`auth*.json`), so every other command just reads it.
@@ -151,6 +153,9 @@ outlook graph /me/joinedTeams                       # Teams you belong to
 outlook graph "/chats/<id>/messages?\$top=20"      # messages in a chat
 outlook graph /chats/<id>/messages '{"body":{"content":"hi"}}' -X POST   # post a message
 
+# Graph beta instead of v1.0:
+outlook graph --beta "/me?\$select=displayName"
+
 # Target Substrate instead (Copilot / search) once a token is captured:
 outlook graph /search/api/v1/query '{...}' -X POST --resource substrate
 ```
@@ -181,6 +186,38 @@ members, teams, channels, and **sending** all work with the common scope set.
 
 **`teams-send` sends immediately** — treat it like `send` for email: confirm
 the chat and text first.
+
+### Meeting transcripts
+
+Teams saves meeting recordings (and their transcripts) in the organiser's
+OneDrive. Listing them works with the Graph token; the transcript text is
+only served by SharePoint's own API, which needs a **SharePoint token** for
+your OneDrive host (`<tenant>-my.sharepoint.com`). `outlook keepalive`
+captures it from its OneDrive tab; `outlook token-audit` shows it as
+`sharepoint`. All of this is read-only (GET).
+
+```bash
+outlook transcripts                    # last 14 days, meetings with a transcript
+outlook transcripts --since 2026-11-01 # or --since 7d
+outlook transcripts --all --mine       # include recordings without one; own OneDrive only
+outlook transcript '<id>'              # JSON: speakers + entries [{speaker,start,end,text}]
+outlook transcript '<id>' --format text   # "[00:01:02] Jane Doe: ..." lines
+outlook transcript '<id>' --raw        # keep every utterance (default merges a speaker's consecutive lines)
+```
+
+Each `transcripts` row has `id` (`<driveId>:<itemId>`; quote it, drive ids
+start with `b!`), `subject`, `startedAt`/`endedAt`, `durationMinutes`,
+`hasTranscript`, `owner` (`me` or `shared`), and `iCalUid` / `threadId` to
+match a calendar event (`event.ICalUId`) or the meeting chat. Shared rows come
+from `/me/drive/sharedWithMe`, i.e. recordings Teams shared with you as an
+invitee.
+
+Not reachable: Graph's `/onlineMeetings/{id}/transcripts` (needs
+`OnlineMeetingTranscript.Read.All`, which no web app's token carries) and the
+Copilot / intelligent recap notes (`aiInsights`, needs a scope no token
+carries; the recap UI goes through Copilot's streaming service). Recordings
+of channel meetings live in the team's SharePoint site, not OneDrive, and are
+not covered.
 
 ### Copilot
 

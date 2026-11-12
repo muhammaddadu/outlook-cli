@@ -10,7 +10,8 @@
 
 import { AppError, E } from './errors.mjs';
 import { debug } from './output.mjs';
-import { DEFAULT_RESOURCE, resourceBase } from './resources.mjs';
+import { DEFAULT_RESOURCE, resourceBase, audienceOrigin } from './resources.mjs';
+import { decodePayload } from './jwt.mjs';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -65,9 +66,16 @@ function networkError(cause, url) {
  * returned to the caller untouched.
  */
 export async function call(auth, path, init = {}) {
-  // `resource` is our routing hint, not a fetch option — pull it out.
-  const { resource: res_, ...fetchInit } = init;
-  const base = resourceBase(res_ ?? DEFAULT_RESOURCE);
+  // `resource` and `base` are routing hints, not fetch options. `base`
+  // overrides the resource's base URL (e.g. Graph beta). A resource whose
+  // host is per-tenant (SharePoint) has no static base: it is the origin
+  // the token was minted for.
+  const { resource: res_, base: baseOverride, ...fetchInit } = init;
+  const base =
+    baseOverride ??
+    (resourceBase(res_ ?? DEFAULT_RESOURCE) ||
+      audienceOrigin(decodePayload(auth?.authorization ?? '')?.aud) ||
+      '');
   const url = `${base}${path}`;
   const method = fetchInit.method ?? 'GET';
 

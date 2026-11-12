@@ -19,6 +19,8 @@
  * @property {string[]} audiences JWT `aud` values that map to this resource
  * @property {string} host       request host that identifies this resource on the wire
  * @property {string} label      human name for audit output
+ * @property {RegExp} [audiencePattern] matches `aud` values when the audience is per-tenant
+ * @property {RegExp} [hostPattern]     matches request hosts when the host is per-tenant
  */
 
 /** @type {Record<string, Resource>} */
@@ -51,6 +53,24 @@ export const RESOURCES = Object.freeze({
     host: 'substrate.office.com',
     label: 'Substrate (Copilot, unified search)',
   },
+  // OneDrive for Business (SharePoint Online, the tenant's "-my" host). Teams
+  // keeps meeting recordings and their transcripts there, and the transcript
+  // text is only served by SharePoint's own v2.1 API, which rejects Graph
+  // tokens (invalidAudienceUri). The host is per-tenant, so the audience and
+  // host are patterns and the base URL comes from the token (see client.mjs).
+  // Only the "-my" host counts: team-site tokens would overwrite it in the
+  // single cache slot and can't read personal OneDrives.
+  sharepoint: {
+    key: 'sharepoint',
+    base: '',
+    envBase: 'OUTLOOK_SHAREPOINT_BASE',
+    audiences: [],
+    audiencePattern:
+      /^(https:\/\/[a-z0-9-]+-my\.sharepoint\.com\/?|00000003-0000-0ff1-ce00-000000000000\/[a-z0-9-]+-my\.sharepoint\.com@.*)$/i,
+    host: '',
+    hostPattern: /^[a-z0-9-]+-my\.sharepoint\.com$/i,
+    label: 'OneDrive / SharePoint (meeting recordings, transcripts)',
+  },
 });
 
 export const DEFAULT_RESOURCE = 'outlook';
@@ -72,18 +92,32 @@ export function resourceBase(key) {
 }
 
 /**
+ * Origin a per-tenant token is for, from its `aud` claim:
+ * "https://contoso-my.sharepoint.com" for both the URL and the
+ * "<guid>/<host>@<tenant>" audience forms. Null when `aud` names no host.
+ */
+export function audienceOrigin(aud) {
+  if (typeof aud !== 'string') return null;
+  const m = /^(?:https:\/\/|[0-9a-f-]{36}\/)([a-z0-9.-]+)/i.exec(aud);
+  return m ? `https://${m[1].toLowerCase()}` : null;
+}
+
+/**
  * Classify a token by its `aud` claim and/or the host it was sent to.
  * Returns the resource key, or null if it belongs to no resource we model.
  */
 export function classifyToken({ aud, host } = {}) {
   if (aud) {
     for (const r of Object.values(RESOURCES)) {
-      if (r.audiences.includes(aud)) return r.key;
+      if (r.audiences.includes(aud) || r.audiencePattern?.test(aud)) return r.key;
     }
   }
   if (host) {
     for (const r of Object.values(RESOURCES)) {
-      if (host === r.host) return r.key;
+      if (r.host && host === r.host) return r.key;
+      // Per-tenant hosts only by host when there is no audience: a team-site
+      // or other-app token sent to the OneDrive host must not be filed as one.
+      if (!aud && r.hostPattern?.test(host)) return r.key;
     }
   }
   return null;
