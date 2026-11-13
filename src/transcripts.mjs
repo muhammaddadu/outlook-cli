@@ -153,3 +153,120 @@ export function pickTranscript(list, wanted) {
     [...list].sort((a, b) => Date.parse(b.createdDateTime ?? 0) - Date.parse(a.createdDateTime ?? 0))[0]
   );
 }
+
+// ---------------------------------------------------------------------------
+// AI recap (Teams "intelligent recap": AI notes, follow-up tasks, mentions).
+//
+// Teams' Recap -> "AI summary" tab reads it from Substrate's recommendations
+// API with a MeetingCatchUp query (found 2026-11-12 by sniffing the Teams
+// web client). The meeting is named by its recording's SharePoint ids, and
+// the call needs a Substrate-audience token from Teams web, which it only
+// mints on a recap page (the keepalive keeps one open). Graph's aiInsights
+// is not reachable (missing scope), and Teams' /api/mcps only lists that a
+// summary exists.
+
+export const RECAP_PATH = '/search/api/v1/recommendations/?&setflight=AiTasksV3,AiNotesV3,PeopleMentionsV2';
+export const RECAP_SCENARIO = 'MeetingCatchUp.MeetingRecap.Shared';
+
+/** "SPO_<base64(siteId,webId,listId) without padding>_<driveItemId>". */
+export function recapEntityId(sharepointIds, itemId) {
+  const { siteId, webId, listId } = sharepointIds ?? {};
+  if (!siteId || !webId || !listId || !itemId) return null;
+  const b64 = Buffer.from(`${siteId},${webId},${listId}`).toString('base64').replace(/=+$/, '');
+  return `SPO_${b64}_${itemId}`;
+}
+
+export function recapRequestBody(entityId) {
+  return {
+    EntityRequests: [{ Context: { EntityId: entityId }, QueryParameters: [{ EntityType: 'MeetingCatchUp' }] }],
+    Scenario: { Name: RECAP_SCENARIO },
+  };
+}
+
+function parseMaybeJson(v) {
+  if (typeof v !== 'string') return v ?? null;
+  try {
+    return JSON.parse(v);
+  } catch {
+    return null;
+  }
+}
+
+function msToOffset(ms) {
+  if (!Number.isFinite(ms)) return null;
+  const s = Math.floor(ms / 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(Math.floor(s / 3600))}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`;
+}
+
+/**
+ * The useful parts of a MeetingCatchUp response (shape verified live
+ * 2026-11-13). The result lives at EntitySets[0].ResultSets[0].Results[0]
+ * .Source. MeetingSummary and MeetingHighlights are JSON encoded as strings.
+ * InsightProcessingStates says which insights Teams has produced; anything
+ * not "ProcessedSuccessfully" is listed under `pending` so callers can tell
+ * "no notes yet" from "no notes".
+ */
+export function parseRecap(body) {
+  const src = body?.EntitySets?.[0]?.ResultSets?.[0]?.Results?.[0]?.Source;
+  if (!src) return { status: 'none', topics: [], actionItems: [], highlights: [], speakers: [], mentions: [] };
+  const summary = parseMaybeJson(src.MeetingSummary) ?? {};
+  const hl = parseMaybeJson(src.MeetingHighlights) ?? {};
+  const poi = src.PointsOfInterest ?? {};
+  const topics = (Array.isArray(summary.KeyTopics) ? summary.KeyTopics : []).map((t) => ({
+    headline: t.Headline ?? null,
+    summary: t.Summary ?? null,
+    at: shortOffset(t.Citations?.[0]?.UtteranceStartOffsetTimespan ?? null),
+    details: (t.DetailedSummaries ?? []).map((d) => ({ topic: d.topic ?? null, text: d.text ?? '' })).filter((d) => d.text),
+  }));
+  const actionItems = (Array.isArray(poi.ActionItems) ? poi.ActionItems : [])
+    .map((a) => ({ owner: a.OwnerDisplayName ?? null, text: (a.DisplayCleanContent ?? a.Headline ?? '').trim() }))
+    .filter((a) => a.text);
+  const highlights = (Array.isArray(hl.highlights) ? hl.highlights : []).map((h) => ({
+    title: h.title ?? null,
+    at: msToOffset(h.startTimeRelativeInMillisecond),
+    durationSec: h.durationInSec ?? null,
+  }));
+  const mentions = (Array.isArray(poi.MentionEvents) ? poi.MentionEvents : []).map((m) => ({
+    speaker: m.SpeakerName ?? m.SpeakerDisplayName ?? null,
+    text: (m.DisplayCleanContent ?? m.Headline ?? m.Text ?? '').trim() || null,
+  }));
+  const states = src.InsightProcessingStates ?? {};
+  const pending = Object.entries(states)
+    .filter(([, v]) => v !== 'ProcessedSuccessfully' && v !== 'NotRequested')
+    .map(([k, v]) => `${k}: ${v}`);
+  const ready = topics.length > 0 || actionItems.length > 0;
+  return {
+    status: ready ? 'ready' : 'processing',
+    organizer: src.Organizer?.DisplayName ?? null,
+    endedAt: src.MeetingEndTime ?? src.RecordingEndTime ?? null,
+    attendeesCount: src.AttendeesCount ?? null,
+    speakers: (src.Speakers ?? []).map((s) => s.DisplayName).filter(Boolean),
+    topics,
+    actionItems,
+    highlights,
+    mentions,
+    pending,
+    recapUrl: src.TeamsRecapUrl ?? null,
+  };
+}
+
+/** Plain-text recap for agents: topics, then follow-up tasks. */
+export function recapToText(r) {
+  const lines = [];
+  if (r.subject) lines.push(`# ${r.subject}${r.startedAt ? ` (${r.startedAt})` : ''}`);
+  if (r.speakers?.length) lines.push(`Speakers: ${r.speakers.join(', ')}`);
+  if (r.topics?.length) {
+    lines.push('', '## Notes');
+    for (const t of r.topics) {
+      lines.push(`- ${t.headline ?? 'Topic'}${t.at ? ` [${t.at}]` : ''}: ${t.summary ?? ''}`.trimEnd());
+      for (const d of t.details) lines.push(`  - ${d.topic ? `${d.topic}: ` : ''}${d.text}`);
+    }
+  }
+  if (r.actionItems?.length) {
+    lines.push('', '## Follow-up tasks');
+    for (const a of r.actionItems) lines.push(`- ${a.owner ? `${a.owner}: ` : ''}${a.text}`);
+  }
+  if (r.status !== 'ready') lines.push('', `(No AI notes yet: ${r.status}${r.pending?.length ? `; ${r.pending.join(', ')}` : ''})`);
+  return lines.join('\n');
+}

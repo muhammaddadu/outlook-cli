@@ -427,6 +427,55 @@ scopes (consent wall, §1–4).
 
 ---
 
+## 17. Teams AI recap: a Substrate query, with a token only the recap page mints
+
+**Date:** 2026-11-12 to 2026-11-13. **Goal:** the intelligent recap notes
+(AI notes, follow-up tasks) that §16 marked unreachable.
+
+Sniffing the Teams web client on a recap page (`https://teams.microsoft.com/_#/l/meetingrecap?...`;
+the `/l/meetingrecap` form without `_#` often stops at the "open in app"
+launcher) showed the AI summary tab calls:
+
+```
+POST https://substrate.office.com/search/api/v1/recommendations/?&setflight=AiTasksV3,AiNotesV3,PeopleMentionsV2
+X-AnchorMailbox: Oid:<oid>@<tid>
+{"EntityRequests":[{"Context":{"EntityId":"SPO_<base64 'siteId,webId,listId' no padding>_<driveItemId>"},
+  "QueryParameters":[{"EntityType":"MeetingCatchUp"}]}],"Scenario":{"Name":"MeetingCatchUp.MeetingRecap.Shared"}}
+```
+
+The ids come from the recording's driveItem (`$select=sharepointIds`).
+
+| Token used for the replay | Result |
+| --- | --- |
+| OWA's Substrate token (appid 9199bf20) | 403 "service is not authorized for provided user credentials" |
+| Teams web's Outlook-audience token | 500 "The call failed" |
+| Teams web's token with aud `https://substrate.office.com` (appid 5e3ce6c0) | 200, full recap |
+
+Teams mints that last token only while a recap page is open, so the
+keepalive's Teams tab now opens the newest own recording's recap page
+(`recapSurface()`; override with `OUTLOOK_RECAP_SURFACE`). `/api/mcps` on
+teams.microsoft.com only lists that an AI summary exists; Graph `aiInsights`
+stays 403/404.
+
+**Response shape:** `EntitySets[0].ResultSets[0].Results[0].Source` holds
+`MeetingSummary` (a JSON *string*: `KeyTopics[{Headline, Summary,
+DetailedSummaries[{topic,text}], Citations[{UtteranceStartOffsetTimespan}]}]`),
+`MeetingHighlights` (JSON string), `PointsOfInterest.ActionItems[{OwnerDisplayName,
+DisplayCleanContent}]`, `Speakers`, and `InsightProcessingStates`, which says which
+insights are done.
+
+**Gotchas:** captured headers already carry a lower-case `x-anchormailbox`;
+a mixed-case override is *joined* by fetch ("PUID:…, Oid:…"), so set the
+lower-case name. The network to outlook.office.com/substrate.office.com
+dropped for ~18 h on 2026-11-12, and the keepalive's sign-in lapsed during
+it: a long outage means a fresh sign-in.
+
+**Rule:** this is the one POST the CLI makes for reading. It is a query with
+no side effects, sent exactly as Teams sends it; don't add other POSTs to
+Substrate without the same check.
+
+---
+
 ## Rules summarised
 
 1. Admin consent on `Mail.*` is a wall. There is no clever way around it.

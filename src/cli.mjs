@@ -53,6 +53,11 @@ import {
   toText,
   pickTranscript,
   subjectFromName,
+  RECAP_PATH,
+  recapEntityId,
+  recapRequestBody,
+  parseRecap,
+  recapToText,
 } from './transcripts.mjs';
 import { resolveDraftStyle, bodyToFragment, prependToBody, replaceReplyText } from './compose.mjs';
 import {
@@ -749,6 +754,75 @@ program
       entryCount: entries.length,
       entries,
     });
+  });
+
+const SUBSTRATE_AUDIENCES = new Set(['https://substrate.office.com', 'https://substrate.office.com/']);
+
+/** Cached Substrate token minted for substrate.office.com itself (not /sydney or search apps). */
+function recapAuth() {
+  const all = [loadCachedAuth('substrate'), ...loadVariants('substrate')].filter(Boolean);
+  const pick = all.find((a) => SUBSTRATE_AUDIENCES.has(decodePayload(a.headers.authorization)?.aud));
+  if (!pick) {
+    throw new AppError({
+      code: E.AUTH_REQUIRED,
+      message: 'No Substrate token for meeting recaps is cached.',
+      hint:
+        'Teams web mints it only on a meeting recap page; `outlook keepalive` keeps one open and ' +
+        'renews it on each reload. If the keepalive is running, wait for its next reload (or run ' +
+        '`outlook refresh --all`) and retry.',
+    });
+  }
+  return pick.headers;
+}
+
+program
+  .command('recap')
+  .argument('<id>', 'recording id from `outlook transcripts`')
+  .description(
+    "Print a meeting's Teams AI recap (AI notes, follow-up tasks, mentions)\n" +
+      'as JSON. Read-only: it is a query sent as POST, the same call Teams makes.\n' +
+      'Needs the Substrate token the keepalive captures from a recap page.',
+  )
+  .option('--format <fmt>', 'json or text', 'json')
+  .option('--raw', 'print the service response unparsed')
+  .action(async (id, opts) => {
+    if (!['json', 'text'].includes(opts.format)) {
+      throw new AppError({ code: E.ARGS, message: `--format must be json or text, not "${opts.format}".` });
+    }
+    const ref = decodeRecordingId(id);
+    const item = await gget(`${driveItemPath(ref)}?$select=id,name,createdDateTime,source,media,sharepointIds,parentReference`);
+    const entityId = recapEntityId(item.sharepointIds, item.id);
+    if (!entityId) {
+      throw new AppError({ code: E.UNEXPECTED, message: 'Graph returned no SharePoint ids for this recording.', hint: 'Check the id with `outlook transcripts`.' });
+    }
+    const auth = recapAuth();
+    const claims = decodePayload(auth.authorization) ?? {};
+    const headers = { 'Content-Type': 'application/json' };
+    // Substrate routes by mailbox; Teams sends the same anchor. Lower-case so it
+    // replaces (not joins) any anchor in the captured headers.
+    if (claims.oid && claims.tid) headers['x-anchormailbox'] = `Oid:${claims.oid}@${claims.tid}`;
+    const res = await call(auth, RECAP_PATH, {
+      resource: 'substrate',
+      method: 'POST',
+      headers,
+      body: JSON.stringify(recapRequestBody(entityId)),
+    });
+    if (res.status === 401) {
+      throw new AppError({ code: E.AUTH_REQUIRED, message: 'Substrate rejected the cached recap token (HTTP 401).', hint: 'Wait for the keepalive to reload its recap tab, then retry.' });
+    }
+    if (res.status >= 400) throw httpError(res, 'POST', RECAP_PATH);
+    if (opts.raw) return printJson(res.body);
+    const media = item.media ?? {};
+    const out = {
+      id: item.parentReference?.driveId ? `${item.parentReference.driveId}:${item.id}` : item.id,
+      subject: subjectFromName(item.name),
+      startedAt: media.recordingStartDateTime ?? item.createdDateTime ?? null,
+      iCalUid: item.source?.iCalUid ?? null,
+      threadId: item.source?.threadId ?? null,
+      ...parseRecap(res.body),
+    };
+    if (opts.format === 'text') return process.stdout.write(`${recapToText(out)}\n`);
+    printJson(out);
   });
 
 // ---------------------------------------------------------------------------

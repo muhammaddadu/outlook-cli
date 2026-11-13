@@ -92,7 +92,10 @@ outlook keepalive --uninstall-launchd
 ```
 
 - Opens OWA, Teams, Copilot and your OneDrive (its URL comes from Graph, so
-  OneDrive joins from the first start that finds a Graph token cached). You
+  OneDrive joins from the first start that finds a Graph token cached). The
+  Teams tab opens the recap page of your newest recording with a transcript
+  (Teams mints the token `outlook recap` needs only there); set
+  `OUTLOOK_RECAP_SURFACE` to choose another URL. You
   sign in once (MFA included); the window
   then minimises itself, and comes back if Microsoft asks for sign-in again.
 - The web apps renew their own tokens; keepalive writes each fresh Bearer to
@@ -213,11 +216,35 @@ from `/me/drive/sharedWithMe`, i.e. recordings Teams shared with you as an
 invitee.
 
 Not reachable: Graph's `/onlineMeetings/{id}/transcripts` (needs
-`OnlineMeetingTranscript.Read.All`, which no web app's token carries) and the
-Copilot / intelligent recap notes (`aiInsights`, needs a scope no token
-carries; the recap UI goes through Copilot's streaming service). Recordings
-of channel meetings live in the team's SharePoint site, not OneDrive, and are
-not covered.
+`OnlineMeetingTranscript.Read.All`, which no web app's token carries) and
+Graph's `aiInsights`. Recordings of channel meetings live in the team's
+SharePoint site, not OneDrive, and are not covered.
+
+### `outlook recap <id>` (Teams AI recap)
+
+The AI notes and follow-up tasks Teams shows under Recap → AI summary, for a
+recording id from `outlook transcripts`.
+
+```bash
+outlook recap '<id>'                 # JSON
+outlook recap '<id>' --format text   # notes, then follow-up tasks
+outlook recap '<id>' --raw           # the service response, unparsed
+```
+
+JSON fields: `status` (`ready`, `processing` = no notes yet, `none` = no
+recap for this meeting), `organizer`, `attendeesCount`, `speakers`,
+`topics[{headline, summary, at, details[{topic, text}]}]`,
+`actionItems[{owner, text}]`, `highlights[{title, at, durationSec}]`,
+`mentions`, `pending` (insights Teams hasn't produced), `recapUrl`, plus
+`id`, `subject`, `startedAt`, `iCalUid`, `threadId`.
+
+How it works: Teams reads the recap from Substrate's recommendations API with
+a `MeetingCatchUp` query. That query is sent as a **POST but only reads**;
+it's the same call the Teams web client makes, and `recap` makes no other
+POST. It needs a Substrate token whose audience is `https://substrate.office.com`,
+which Teams web mints only on a recap page, so it depends on the keepalive's
+recap tab. Without one, `recap` exits 2. The meeting must have had
+intelligent recap (a Teams Premium or Copilot licence and a transcript).
 
 ### Copilot
 

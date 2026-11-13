@@ -1,6 +1,6 @@
 ---
 name: outlook
-description: Read, search, triage, draft, and send mail PLUS view and manage calendar events through the user's Outlook / Microsoft 365 mailbox, PLUS list Microsoft Teams (teams, channels, chats, members) and post Teams chat messages via Graph, PLUS list Teams meeting recordings and read their transcripts. Use when the user asks to check inbox, summarise unread mail, find a specific email, draft a reply they can review, send mail, view their calendar / agenda, find what meetings they have today / this week, create or update calendar events, RSVP to invites, check free/busy, list their Teams / chats, send a Teams message, or find what was said in a past meeting (transcripts). Teams needs `outlook auth --all`; reading Teams message bodies may be blocked by tenant scope. Copilot is not supported (streaming protocol). Prefer drafts (`draft`, `draft-reply`, `draft-reply-all`, `draft-forward`) over direct send so the user can review in Outlook first. Confirm with the user before creating or cancelling events with attendees (invitations / cancellations send IMMEDIATELY). Requires the `outlook` CLI to be installed on the user's PATH; if it is not, tell the user and stop. All output is JSON to stdout; pipe through `jq` for transformation. This skill does NOT cover Gmail, IMAP, or other mail providers.
+description: Read, search, triage, draft, and send mail PLUS view and manage calendar events through the user's Outlook / Microsoft 365 mailbox, PLUS list Microsoft Teams (teams, channels, chats, members) and post Teams chat messages via Graph, PLUS list Teams meeting recordings and read their transcripts and Teams AI recap (notes, follow-up tasks). Use when the user asks to check inbox, summarise unread mail, find a specific email, draft a reply they can review, send mail, view their calendar / agenda, find what meetings they have today / this week, create or update calendar events, RSVP to invites, check free/busy, list their Teams / chats, send a Teams message, or find what was said or agreed in a past meeting (transcripts, AI recap). Teams needs `outlook auth --all`; reading Teams message bodies may be blocked by tenant scope. Copilot is not supported (streaming protocol). Prefer drafts (`draft`, `draft-reply`, `draft-reply-all`, `draft-forward`) over direct send so the user can review in Outlook first. Confirm with the user before creating or cancelling events with attendees (invitations / cancellations send IMMEDIATELY). Requires the `outlook` CLI to be installed on the user's PATH; if it is not, tell the user and stop. All output is JSON to stdout; pipe through `jq` for transformation. This skill does NOT cover Gmail, IMAP, or other mail providers.
 ---
 
 # Using the `outlook` CLI
@@ -473,8 +473,26 @@ outlook transcript '<id>' | jq '.speakers'  # JSON with entries[{speaker,start,e
   start, stop or sign in the keepalive yourself.
 - Transcripts are verbatim speech and can be long: prefer `--format text`
   and summarise; don't paste them into drafts or files wholesale.
-- Not available: Copilot / intelligent recap notes, and recordings of channel
-  meetings (stored in team sites).
+- Not available: recordings of channel meetings (stored in team sites).
+
+### AI recap (notes and follow-up tasks)
+
+Prefer this over the transcript when you only need what was decided and who
+owns what: it is short and already summarised.
+
+```bash
+outlook recap '<id>' --format text                      # notes, then follow-up tasks
+outlook recap '<id>' | jq '{status, actionItems}'       # JSON
+```
+
+- `status`: `ready`, `processing` (no notes yet; try later or use the
+  transcript), or `none` (no recap for this meeting, e.g. no Premium/Copilot
+  licence or no transcript).
+- It sends one read-only query as a POST, the same one Teams makes. It needs
+  a Substrate token that the keepalive's recap tab captures; on exit 2 tell
+  the user, and don't start, stop or sign in the keepalive yourself.
+- The notes are AI-generated: say so when you quote them, and check anything
+  important against the transcript.
 
 ## Copilot
 

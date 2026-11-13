@@ -225,10 +225,15 @@ export async function runKeepalive({ reloadMinutes = 30, hours } = {}) {
   // OneDrive mints the SharePoint token transcripts need; its URL comes from
   // Graph, so it is only added once a Graph token is cached (the next
   // keepalive start after the first sign-in at the latest).
-  const { oneDriveSurface } = await import('./surfaces.mjs');
+  const { oneDriveSurface, recapSurface } = await import('./surfaces.mjs');
   const oneDrive = await oneDriveSurface();
   if (!oneDrive) debug('no OneDrive URL yet (no Graph token cached); SharePoint token will not be captured this run');
-  const surfaces = oneDrive ? [...KEEPALIVE_SURFACES, oneDrive] : KEEPALIVE_SURFACES;
+  // The Teams tab opens a meeting recap instead of the Teams home page: it is
+  // still the full Teams app (same tokens), and a recap page is the only
+  // place Teams web mints the Substrate token `outlook recap` needs.
+  const recap = await recapSurface();
+  let surfaces = KEEPALIVE_SURFACES.map((u) => (recap && u.startsWith('https://teams.microsoft.com/') ? recap : u));
+  if (oneDrive) surfaces = [...surfaces, oneDrive];
 
   const pages = [];
   for (const url of surfaces) {

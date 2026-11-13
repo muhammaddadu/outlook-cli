@@ -103,7 +103,7 @@ src/
   odata.mjs      # mail filter / query builders (--unread, --from, --folder, …)
   calendar.mjs   # calendar time parsing, calendarView URL, event filters
   resources.mjs  # registry of Microsoft resources (outlook/graph/substrate): base URL, audiences, classification
-  transcripts.mjs # Teams recording listing rows + transcript parsing (pure helpers)
+  transcripts.mjs # Teams recordings, transcript parsing, AI recap query + parsing (pure helpers)
   surfaces.mjs   # per-user web surfaces to open for token capture (OneDrive URL via Graph)
   audit.mjs      # token-audit: decode cached tokens + group scopes into capability areas (offline)
   learn.mjs      # persistent learnings (load/add/forget/clear)
