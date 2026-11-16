@@ -17,13 +17,15 @@ export const RENEW_MARGIN_MS = 10 * 60_000;
 export const RENEW_RETRY_MS = 5 * 60_000;
 
 /**
- * Tokens the keepalive keeps fresh. `tab` names the keepalive tab whose page
- * mints the token; `match` picks it among the cached tokens of `resource`.
+ * Tokens the keepalive keeps fresh. `tabs` names the keepalive tabs whose
+ * pages mint the token; `match` picks it among the cached tokens of
+ * `resource`. SharePoint: live on 2026-11-16 the usable token came from
+ * Teams web (its appid), and re-opening OneDrive alone never renewed it.
  */
 export const RENEWED_TOKENS = Object.freeze([
-  { name: 'teams-graph', resource: 'graph', tab: 'teams', match: (c) => c.appid === TEAMS_APPID },
-  { name: 'recap-substrate', resource: 'substrate', tab: 'teams', match: (c) => RECAP_AUDIENCES.has(c.aud) },
-  { name: 'sharepoint', resource: 'sharepoint', tab: 'onedrive', match: () => true },
+  { name: 'teams-graph', resource: 'graph', tabs: ['teams'], match: (c) => c.appid === TEAMS_APPID },
+  { name: 'recap-substrate', resource: 'substrate', tabs: ['teams'], match: (c) => RECAP_AUDIENCES.has(c.aud) },
+  { name: 'sharepoint', resource: 'sharepoint', tabs: ['teams', 'onedrive'], match: () => true },
 ]);
 
 /**
@@ -57,8 +59,10 @@ export function tabsToRenew({ expiries, now, tabs, lastOpened = {} }) {
   const stale = new Set(staleTokens(expiries, now));
   const due = new Set();
   for (const t of RENEWED_TOKENS) {
-    if (!stale.has(t.name) || !tabs.has(t.tab)) continue;
-    if (now - (lastOpened[t.tab] ?? 0) >= RENEW_RETRY_MS) due.add(t.tab);
+    if (!stale.has(t.name)) continue;
+    for (const tab of t.tabs) {
+      if (tabs.has(tab) && now - (lastOpened[tab] ?? 0) >= RENEW_RETRY_MS) due.add(tab);
+    }
   }
   return [...due];
 }

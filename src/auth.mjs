@@ -284,7 +284,7 @@ async function waitForKeepalive(wantResource, { interactive, waitForAll } = {}) 
  */
 async function waitForRenewedTokens(wanted, pid) {
   const tabs = new Set(readKeepaliveStatus().tabs ?? ['teams', 'onedrive']);
-  const relevant = new Set(RENEWED_TOKENS.filter((t) => tabs.has(t.tab)).map((t) => t.name));
+  const relevant = new Set(RENEWED_TOKENS.filter((t) => t.tabs.some((x) => tabs.has(x))).map((t) => t.name));
   const deadline = Date.now() + KEEPALIVE_WAIT_ALL_MS;
   for (;;) {
     const map = {};

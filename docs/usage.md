@@ -109,8 +109,8 @@ outlook keepalive --uninstall-launchd
 - Three tokens are only minted when a page asks for one: Teams web's Graph
   token (~75 min), the recap Substrate token (~1 h) and the SharePoint token
   (~1 h). The keepalive checks their expiry in the cache every 30 s and
-  reopens the Teams tab (recap page) or the OneDrive tab when one has less
-  than 10 min left, at most once every 5 min per tab. `keepalive.json` records
+  reopens the tab that mints it when one has less than 10 min left (Teams
+  recap page for all three, plus OneDrive for SharePoint), at most once every 5 min per tab. `keepalive.json` records
   the last one under `lastRenew`.
 - Writes `~/.cache/outlook-spike/keepalive.json` with `state`
   (`signing-in` | `signed-in` | `stopped`), token save times and `lastError`.

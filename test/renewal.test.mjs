@@ -52,8 +52,11 @@ test('tabsToRenew: only tabs that exist, own a stale token, and were not just op
     tabsToRenew({ expiries, now: NOW, tabs, lastOpened: { teams: NOW - RENEW_RETRY_MS } }).sort(),
     ['onedrive', 'teams'],
   );
-  // No OneDrive tab (no Graph token at start): nothing to re-open for SharePoint.
-  assert.deepEqual(tabsToRenew({ expiries, now: NOW, tabs: new Set(['outlook', 'teams']) }), ['teams']);
+  // Only SharePoint stale: Teams web mints it too, so both tabs re-open.
+  const spOnly = { 'teams-graph': NOW + 3_600_000, 'recap-substrate': NOW + 3_600_000, sharepoint: NOW + 60_000 };
+  assert.deepEqual(tabsToRenew({ expiries: spOnly, now: NOW, tabs }).sort(), ['onedrive', 'teams']);
+  // No OneDrive tab (no Graph token at start): Teams alone renews SharePoint.
+  assert.deepEqual(tabsToRenew({ expiries: spOnly, now: NOW, tabs: new Set(['outlook', 'teams']) }), ['teams']);
   // Everything fresh: nothing to do.
   const fresh = { 'teams-graph': NOW + 3_600_000, 'recap-substrate': NOW + 3_600_000, sharepoint: NOW + 3_600_000 };
   assert.deepEqual(tabsToRenew({ expiries: fresh, now: NOW, tabs }), []);
@@ -81,9 +84,11 @@ test('refresh --all with a keepalive waits until the renewed tokens are fresh', 
   const jwt = (claims) => `Bearer ${makeFakeJwt({ expSeconds: Math.floor(Date.now() / 1000) + 3600, claims })}`;
   const put = (file, claims) => writeFileSync(file, JSON.stringify({ headers: { authorization: jwt(claims) } }));
   writeFileSync(env.OUTLOOK_KEEPALIVE_PID, String(process.pid));
-  // This keepalive has no OneDrive tab, so SharePoint is not waited for.
+  // Teams tab, no OneDrive tab. SharePoint is fresh from the start, so the
+  // wait is for the Teams Graph and recap Substrate tokens.
   writeFileSync(env.OUTLOOK_KEEPALIVE_STATUS, JSON.stringify({ state: 'signed-in', tabs: ['outlook', 'teams'] }));
   put(env.OUTLOOK_TOKEN_CACHE, {});
+  put(env.OUTLOOK_TOKEN_CACHE_SHAREPOINT, { aud: '00000003-0000-0ff1-ce00-000000000000' });
   // Only OWA's tokens are fresh at first, as on 2026-11-16.
   put(join(dir, 'auth-graph@owa.json'), { aud: 'https://graph.microsoft.com', appid: 'owa' });
   const onUsr1 = () => {};
