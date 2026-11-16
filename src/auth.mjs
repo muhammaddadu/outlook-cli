@@ -23,7 +23,8 @@ import { debug, info } from './output.mjs';
 import { decodePayload } from './jwt.mjs';
 import { AppError, E } from './errors.mjs';
 import { DEFAULT_RESOURCE, RESOURCES, resource } from './resources.mjs';
-import { keepalivePid, pokeKeepalive, keepaliveOwnsProfileError } from './keepalive.mjs';
+import { keepalivePid, pokeKeepalive, keepaliveOwnsProfileError, readKeepaliveStatus } from './keepalive.mjs';
+import { RENEWED_TOKENS, tokenExpiries, staleTokens } from './renewal.mjs';
 
 // Lazy import — capture.mjs pulls in Playwright (≈80MB of resident memory
 // and a Chromium executable check). Cache-hit calls never hit this code
@@ -159,6 +160,35 @@ export function loadVariants(res = DEFAULT_RESOURCE) {
   return out.sort((a, b) => b.expiresAt - a.expiresAt);
 }
 
+/**
+ * Claims of every cached token for `res` (primary + per-app variants),
+ * expired ones included, for the keepalive's renewal checks.
+ */
+export function cachedClaims(res) {
+  const primary = tokenCacheFile(res);
+  const dir = dirname(primary);
+  const prefix = `${basename(primary, '.json')}@`;
+  let files = [primary];
+  try {
+    files = files.concat(readdirSync(dir).filter((n) => n.startsWith(prefix) && n.endsWith('.json')).map((n) => join(dir, n)));
+  } catch {}
+  const out = [];
+  for (const f of files) {
+    try {
+      const claims = decodePayload(JSON.parse(readFileSync(f, 'utf8'))?.headers?.authorization ?? '');
+      if (claims) out.push(claims);
+    } catch {}
+  }
+  return out;
+}
+
+/** cachedClaims for every resource a renewed token lives in. */
+export function renewedTokenExpiries() {
+  const byRes = {};
+  for (const t of RENEWED_TOKENS) byRes[t.resource] ??= cachedClaims(t.resource);
+  return tokenExpiries(byRes);
+}
+
 /** Scopes named in a Graph 403 like "API requires one of 'A, B'". */
 export function requiredScopesFrom(body) {
   const msg = typeof body === 'string' ? body : (body?.error?.message ?? '');
@@ -216,8 +246,10 @@ export async function refreshAuth({ wantResource = DEFAULT_RESOURCE, ...opts } =
 }
 
 const KEEPALIVE_WAIT_MS = 90_000;
+// A full re-open of the Teams recap page takes ~50s to mint its Substrate token.
+const KEEPALIVE_WAIT_ALL_MS = 150_000;
 
-async function waitForKeepalive(wantResource, { interactive } = {}) {
+async function waitForKeepalive(wantResource, { interactive, waitForAll } = {}) {
   const pid = keepalivePid();
   if (interactive) {
     throw new AppError({
@@ -228,6 +260,7 @@ async function waitForKeepalive(wantResource, { interactive } = {}) {
   }
   pokeKeepalive();
   const wanted = wantResource === null ? Object.keys(RESOURCES) : [wantResource];
+  if (wantResource === null && waitForAll) return waitForRenewedTokens(wanted, pid);
   const deadline = Date.now() + KEEPALIVE_WAIT_MS;
   for (;;) {
     const map = {};
@@ -239,6 +272,33 @@ async function waitForKeepalive(wantResource, { interactive } = {}) {
       return wantResource === null ? map : map[wantResource];
     }
     if (Date.now() > deadline) throw keepaliveOwnsProfileError(pid);
+    await new Promise((r) => setTimeout(r, 2_000));
+  }
+}
+
+/**
+ * `refresh --all` with a keepalive running: wait until the tokens the
+ * keepalive renews on purpose (Teams Graph, recap Substrate, SharePoint) are
+ * usable again, for the tabs it actually has open. Returns every usable
+ * token; warns about any still stale at the deadline.
+ */
+async function waitForRenewedTokens(wanted, pid) {
+  const tabs = new Set(readKeepaliveStatus().tabs ?? ['teams', 'onedrive']);
+  const relevant = new Set(RENEWED_TOKENS.filter((t) => tabs.has(t.tab)).map((t) => t.name));
+  const deadline = Date.now() + KEEPALIVE_WAIT_ALL_MS;
+  for (;;) {
+    const map = {};
+    for (const r of wanted) {
+      const c = loadCachedAuth(r);
+      if (c) map[r] = c.headers;
+    }
+    const stale = staleTokens(renewedTokenExpiries(), Date.now(), MIN_LIFETIME_MS).filter((n) => relevant.has(n));
+    if (map[DEFAULT_RESOURCE] && stale.length === 0) return map;
+    if (Date.now() > deadline) {
+      if (Object.keys(map).length === 0) throw keepaliveOwnsProfileError(pid);
+      if (stale.length) info(`Warning: the keepalive did not renew ${stale.join(', ')} in time; retry in a few minutes.`);
+      return map;
+    }
     await new Promise((r) => setTimeout(r, 2_000));
   }
 }

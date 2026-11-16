@@ -33,6 +33,15 @@ export const KEEPALIVE_SURFACES = Object.freeze([
   'https://m365.cloud.microsoft/chat/',
 ]);
 
+/** Short name of a keepalive tab, used by the renewal rules (renewal.mjs). */
+export function tabName(url) {
+  if (/^https:\/\/teams\.(microsoft\.com|cloud\.microsoft)\//.test(url)) return 'teams';
+  if (/-my\.sharepoint\.com\//.test(url)) return 'onedrive';
+  if (/^https:\/\/outlook\./.test(url)) return 'outlook';
+  if (/m365\.cloud\.microsoft|copilot/.test(url)) return 'copilot';
+  return url;
+}
+
 export const LAUNCHD_LABEL = 'com.outlook-cli.keepalive';
 
 export function statusFile() {
@@ -166,7 +175,8 @@ export async function runKeepalive({ reloadMinutes = 30, hours } = {}) {
     return;
   }
   const { openContext, attachTokenSniffer } = await import('./capture.mjs');
-  const { loadCachedAuth, saveAuth, saveVariant } = await import('./auth.mjs');
+  const { loadCachedAuth, saveAuth, saveVariant, renewedTokenExpiries } = await import('./auth.mjs');
+  const { tabsToRenew, staleTokens } = await import('./renewal.mjs');
 
   mkdirSync(dirname(pidFile()), { recursive: true });
   writeFileSync(pidFile(), String(process.pid));
@@ -235,17 +245,38 @@ export async function runKeepalive({ reloadMinutes = 30, hours } = {}) {
   let surfaces = KEEPALIVE_SURFACES.map((u) => (recap && u.startsWith('https://teams.microsoft.com/') ? recap : u));
   if (oneDrive) surfaces = [...surfaces, oneDrive];
 
+  const tabs = [];
   const pages = [];
+  const lastOpened = {};
+  // Full navigation to the tab's own URL. Not page.reload(): the web apps
+  // rewrite their URL after loading (Teams leaves the recap page), so a
+  // reload no longer reaches the page that mints the token. Going through
+  // about:blank also forces a real load when only the #hash would differ.
+  const openTab = async (tab) => {
+    if (tab.page.isClosed()) return;
+    if (tab.name === 'teams' && !process.env.OUTLOOK_RECAP_SURFACE) {
+      // The newest recording may have changed since start.
+      tab.url = (await recapSurface().catch(() => null)) ?? tab.url;
+    }
+    lastOpened[tab.name] = Date.now();
+    await tab.page.goto('about:blank').catch(() => {});
+    tab.page.goto(tab.url, { waitUntil: 'domcontentloaded', timeout: 120_000 }).catch((e) => debug(`goto ${tab.url}: ${e.message}`));
+  };
   for (const url of surfaces) {
     const page = pages.length === 0 ? (context.pages()[0] ?? (await context.newPage())) : await context.newPage();
     pages.push(page);
+    const tab = { name: tabName(url), url, page };
+    tabs.push(tab);
     page.on('crash', () => {
       writeStatus({ lastError: `${new Date().toISOString()} tab crashed: ${url}` });
       info(`keepalive: tab crashed (${url}); reloading.`);
       page.reload().catch(() => {});
     });
+    lastOpened[tab.name] = Date.now();
     page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120_000 }).catch((e) => debug(`goto ${url}: ${e.message}`));
   }
+  writeStatus({ tabs: tabs.map((t) => t.name) });
+  const tabNames = new Set(tabs.map((t) => t.name));
 
   // Window state via CDP: minimise once signed in, bring back if a login
   // page needs the user.
@@ -270,6 +301,7 @@ export async function runKeepalive({ reloadMinutes = 30, hours } = {}) {
 
   info('keepalive running. Sign in in the browser window if asked; it minimises itself once signed in. Leave it open.');
   let lastReload = Date.now();
+  let lastRenewCheck = 0;
   let lastTick = Date.now();
   let toldToSignIn = false;
   for (;;) {
@@ -303,11 +335,21 @@ export async function runKeepalive({ reloadMinutes = 30, hours } = {}) {
     if ((due || reloadRequested) && !onLogin) {
       reloadRequested = false;
       lastReload = Date.now();
-      for (const p of pages) {
-        if (!p.isClosed()) p.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 }).catch((e) => debug(`reload: ${e.message}`));
-      }
+      for (const tab of tabs) await openTab(tab);
       writeStatus({ lastReloadAt: new Date().toISOString() });
       debug('keepalive reloaded tabs');
+    } else if (!onLogin && signedIn && Date.now() - lastRenewCheck >= 30_000 && isWithinHours(new Date(), hours)) {
+      // Tokens only minted on demand (Teams Graph, recap Substrate,
+      // SharePoint): re-open their tab shortly before they lapse.
+      lastRenewCheck = Date.now();
+      const expiries = renewedTokenExpiries();
+      const due = tabsToRenew({ expiries, now: Date.now(), tabs: tabNames, lastOpened });
+      if (due.length) {
+        const stale = staleTokens(expiries, Date.now());
+        debug(`renewing ${stale.join(', ')} via ${due.join(', ')} tab(s)`);
+        for (const tab of tabs.filter((t) => due.includes(t.name))) await openTab(tab);
+        writeStatus({ lastRenewAt: new Date().toISOString(), lastRenew: { tabs: due, tokens: stale } });
+      }
     }
     await sleep(5_000);
   }

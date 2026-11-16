@@ -470,6 +470,17 @@ lower-case name. The network to outlook.office.com/substrate.office.com
 dropped for ~18 h on 2026-11-12, and the keepalive's sign-in lapsed during
 it: a long outage means a fresh sign-in.
 
+**Follow-up (2026-11-16):** the recap token, Teams' Graph token and the
+SharePoint token all lapsed for hours although the keepalive reloaded its
+tabs every 30 min. Teams rewrites its URL after loading, so `page.reload()`
+no longer reaches the recap page, and nothing checked whether those
+on-demand tokens were still valid. Also, `refresh --all` returned once
+*any* token was fresh (Outlook always is). The fix: the keepalive watches the
+expiry of those three tokens in the cache and, 10 min before one lapses,
+navigates its tab afresh (via about:blank, recomputing the recap URL).
+`refresh --all` waits for them. Still no refresh tokens or cookies are read:
+the page renews them itself.
+
 **Rule:** this is the one POST the CLI makes for reading. It is a query with
 no side effects, sent exactly as Teams sends it; don't add other POSTs to
 Substrate without the same check.

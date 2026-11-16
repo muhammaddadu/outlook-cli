@@ -59,6 +59,7 @@ import {
   parseRecap,
   recapToText,
 } from './transcripts.mjs';
+import { RECAP_AUDIENCES } from './renewal.mjs';
 import { resolveDraftStyle, bodyToFragment, prependToBody, replaceReplyText } from './compose.mjs';
 import {
   buildFileAttachment,
@@ -756,12 +757,11 @@ program
     });
   });
 
-const SUBSTRATE_AUDIENCES = new Set(['https://substrate.office.com', 'https://substrate.office.com/']);
 
 /** Cached Substrate token minted for substrate.office.com itself (not /sydney or search apps). */
 function recapAuth() {
   const all = [loadCachedAuth('substrate'), ...loadVariants('substrate')].filter(Boolean);
-  const pick = all.find((a) => SUBSTRATE_AUDIENCES.has(decodePayload(a.headers.authorization)?.aud));
+  const pick = all.find((a) => RECAP_AUDIENCES.has(decodePayload(a.headers.authorization)?.aud));
   if (!pick) {
     throw new AppError({
       code: E.AUTH_REQUIRED,

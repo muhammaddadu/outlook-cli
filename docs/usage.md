@@ -70,7 +70,9 @@ cron jobs and agents. If the saved session can no longer sign in by itself
 (Microsoft shows a password or account picker for more than ~12s) it fails
 fast with `E_AUTH_REQUIRED`. `--all` refreshes every resource token. When
 `outlook keepalive` is running, `refresh` asks it to reload and reads the
-cache instead of launching a second browser.
+cache instead of launching a second browser. `refresh --all` then also waits
+(up to 2.5 min) until the Teams Graph, recap Substrate and SharePoint tokens
+are usable again, and warns about any that weren't renewed in time.
 
 The same silent path backs automatic renewal inside normal commands: an
 expired token never pops a window any more. Only `outlook auth` is
@@ -100,8 +102,16 @@ outlook keepalive --uninstall-launchd
   then minimises itself, and comes back if Microsoft asks for sign-in again.
 - The web apps renew their own tokens; keepalive writes each fresh Bearer to
   the normal cache (`auth*.json`), so every other command just reads it.
-- Reloads the tabs every 30 min during working hours (Mon–Fri 07:55–19:00),
-  after the Mac wakes from sleep, and when a tab crashes.
+- Reopens the tabs at their own URLs every 30 min during working hours
+  (Mon–Fri 07:55–19:00), after the Mac wakes from sleep, and when a tab
+  crashes. It navigates afresh rather than reloading, because the web apps
+  change their URL after loading.
+- Three tokens are only minted when a page asks for one: Teams web's Graph
+  token (~75 min), the recap Substrate token (~1 h) and the SharePoint token
+  (~1 h). The keepalive checks their expiry in the cache every 30 s and
+  reopens the Teams tab (recap page) or the OneDrive tab when one has less
+  than 10 min left, at most once every 5 min per tab. `keepalive.json` records
+  the last one under `lastRenew`.
 - Writes `~/.cache/outlook-spike/keepalive.json` with `state`
   (`signing-in` | `signed-in` | `stopped`), token save times and `lastError`.
   `outlook token-audit` includes it under `keepalive`.

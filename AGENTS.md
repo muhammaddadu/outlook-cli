@@ -104,7 +104,8 @@ src/
   calendar.mjs   # calendar time parsing, calendarView URL, event filters
   resources.mjs  # registry of Microsoft resources (outlook/graph/substrate): base URL, audiences, classification
   transcripts.mjs # Teams recordings, transcript parsing, AI recap query + parsing (pure helpers)
-  surfaces.mjs   # per-user web surfaces to open for token capture (OneDrive URL via Graph)
+  surfaces.mjs   # per-user web surfaces to open for token capture (OneDrive URL via Graph, recap page)
+  renewal.mjs    # which on-demand tokens the keepalive renews, and when (pure helpers)
   audit.mjs      # token-audit: decode cached tokens + group scopes into capability areas (offline)
   learn.mjs      # persistent learnings (load/add/forget/clear)
   jwt.mjs        # tiny JWT payload decoder (no signature validation)
