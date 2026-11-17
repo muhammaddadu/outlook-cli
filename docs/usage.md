@@ -114,7 +114,14 @@ outlook keepalive --uninstall-launchd
   the last one under `lastRenew`.
 - Writes `~/.cache/outlook-spike/keepalive.json` with `state`
   (`signing-in` | `signed-in` | `stopped`), token save times and `lastError`.
-  `outlook token-audit` includes it under `keepalive`.
+  When it stops it records `exitReason` and `exitedAt`: `browser window
+  closed`, `browser quit (...)` (Cmd+Q, a crash, or the Mac shutting down or
+  restarting), or a signal (`--stop`, logout). `outlook token-audit` includes
+  it under `keepalive`.
+- It exits when its browser goes away and does not restart itself, so after
+  a restart nothing brings it back unless the launchd agent is installed
+  (`--install-launchd`: at login and 07:55 on weekdays). `--status` shows
+  `launchd: true|false`.
 - One instance only (pid file). It owns the browser profile while running, so
   `auth` refuses to start; stop keepalive first if you need `auth`.
 - Keeps every web app's token per resource (`auth-graph@<appid>.json`).

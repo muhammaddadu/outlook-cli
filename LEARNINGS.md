@@ -481,6 +481,15 @@ navigates its tab afresh (via about:blank, recomputing the recap URL).
 `refresh --all` waits for them. Still no refresh tokens or cookies are read:
 the page renews them itself.
 
+**Follow-up (2026-11-17):** the burst of "captured sharepoint token has no
+decodable expiry" warnings came from OneDrive web's opaque Bearers to its
+`-my` host: the host-only fallback filed them as `sharepoint`, and
+`isNewerToken` let one replace a stale cache, which the renewal's frequent
+OneDrive reopens hit often. Now opaque tokens are never classified or
+saved. The keepalive exit on 2026-11-16 16:58Z was the Mac shutting down
+(reboot 17:03Z), not the renewal loop; the status now records `exitReason`,
+and only the launchd agent brings the keepalive back after a restart.
+
 **Rule:** this is the one POST the CLI makes for reading. It is a query with
 no side effects, sent exactly as Teams sends it; don't add other POSTs to
 Substrate without the same check.

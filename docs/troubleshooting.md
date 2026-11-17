@@ -134,6 +134,12 @@ The CLI now warns at capture time when the token has no decodable expiry,
 so this state should announce itself instead of silently relaunching
 Chromium on every command.
 
+The keepalive never saves such a token (since 2026-11-17). Before that,
+`keepalive.log` showed this warning for `sharepoint` in bursts, because
+OneDrive web sends opaque, non-JWT Bearers to its own `-my.sharepoint.com`
+host. Those are no longer captured; the usable SharePoint tokens are JWTs
+with a SharePoint audience.
+
 ### "Playwright: 'Executable doesn't exist'"
 
 You skipped `npm run setup`. Run it now:

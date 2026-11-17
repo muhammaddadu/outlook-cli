@@ -44,6 +44,9 @@ test('classifyToken ignores team-site SharePoint tokens', () => {
   assert.equal(classifyToken({ aud: 'https://contoso.sharepoint.com', host: 'contoso.sharepoint.com' }), null);
   // A Graph-audience token sent to the OneDrive host stays a Graph token.
   assert.equal(classifyToken({ aud: 'https://graph.microsoft.com', host: 'contoso-my.sharepoint.com' }), 'graph');
+  // An opaque (undecodable, so audience-less) Bearer to the OneDrive host is
+  // left alone: it can never be reused.
+  assert.equal(classifyToken({ host: 'contoso-my.sharepoint.com' }), null);
 });
 
 test('classifyToken still uses the static host fallback for unknown audiences', () => {

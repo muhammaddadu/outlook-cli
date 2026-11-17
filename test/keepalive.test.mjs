@@ -8,6 +8,7 @@ import { makeFakeJwt } from './helpers.mjs';
 import {
   isWithinHours,
   isNewerToken,
+  exitReasonFor,
   keepalivePid,
   launchdPlist,
   LAUNCHD_LABEL,
@@ -39,6 +40,20 @@ test('isNewerToken: ignores the same token and older tokens', () => {
 
 test('isNewerToken: accepts a later-expiring token', () => {
   assert.equal(isNewerToken({ authorization: bearer(600) }, { authorization: bearer(4000) }), true);
+});
+
+test('isNewerToken: never saves a token without a decodable expiry', () => {
+  // OneDrive web sends opaque (non-JWT) Bearers to its own host; one used to
+  // replace a stale SharePoint cache and warn before every renewal.
+  const opaque = { authorization: 'Bearer EwBIA8l6BAAUopaque-not-a-jwt' };
+  assert.equal(isNewerToken(null, opaque), false);
+  assert.equal(isNewerToken({ authorization: bearer(60) }, opaque), false);
+  assert.equal(isNewerToken(null, { authorization: `Bearer ${makeFakeJwt({})}` }), false); // JWT without exp
+});
+
+test('exitReasonFor tells a closed window from a browser that quit', () => {
+  assert.equal(exitReasonFor({ browserGone: false }), 'browser window closed');
+  assert.match(exitReasonFor({ browserGone: true }), /browser quit .*shutting down/);
 });
 
 test('keepalivePid: live pid is reported, stale pid file is removed', () => {

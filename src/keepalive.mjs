@@ -33,6 +33,17 @@ export const KEEPALIVE_SURFACES = Object.freeze([
   'https://m365.cloud.microsoft/chat/',
 ]);
 
+/**
+ * Why every keepalive tab is gone. The browser process ending (Cmd+Q, a
+ * crash, or the Mac shutting down: seen 2026-11-16 16:58Z) closes the context
+ * too; closing the window leaves it open.
+ */
+export function exitReasonFor({ browserGone }) {
+  return browserGone
+    ? 'browser quit (Chromium exited: quit, crash, or the Mac shutting down or restarting)'
+    : 'browser window closed';
+}
+
 /** Short name of a keepalive tab, used by the renewal rules (renewal.mjs). */
 export function tabName(url) {
   if (/^https:\/\/teams\.(microsoft\.com|cloud\.microsoft)\//.test(url)) return 'teams';
@@ -102,6 +113,11 @@ export function isWithinHours(date, { days = [1, 2, 3, 4, 5], start = '07:55', e
 export function isNewerToken(current, incoming) {
   const inc = incoming?.authorization;
   if (!inc) return false;
+  // A token without a decodable expiry is never reusable (the cache treats it
+  // as stale), so it must not replace anything. OneDrive web sends such
+  // opaque Bearers to its own host; saving them overwrote the SharePoint
+  // cache and logged a warning before every renewal (2026-11-16).
+  if (!decodePayload(inc)?.exp) return false;
   const cur = current?.authorization;
   if (!cur) return true;
   if (cur === inc) return false;
@@ -200,16 +216,20 @@ export async function runKeepalive({ reloadMinutes = 30, hours } = {}) {
   const context = await openContext({ headless: false });
   let stopping = false;
   let reloadRequested = false;
-  const stop = async () => {
+  let browserGone = false;
+  context.on('close', () => {
+    browserGone = true;
+  });
+  const stop = async (exitReason) => {
     if (stopping) return;
     stopping = true;
-    writeStatus({ state: 'stopped' });
+    writeStatus({ state: 'stopped', exitReason, exitedAt: new Date().toISOString() });
     await context.close().catch(() => {});
     cleanupPid();
     process.exit(0);
   };
-  process.on('SIGTERM', stop);
-  process.on('SIGINT', stop);
+  process.on('SIGTERM', () => stop('signal: SIGTERM (keepalive --stop, logout or shutdown)'));
+  process.on('SIGINT', () => stop('signal: SIGINT'));
   process.on('SIGUSR1', () => {
     debug('reload requested (SIGUSR1)');
     reloadRequested = true;
@@ -313,8 +333,9 @@ export async function runKeepalive({ reloadMinutes = 30, hours } = {}) {
     }
     lastTick = Date.now();
     if (pages.every((p) => p.isClosed())) {
-      info('keepalive: browser window closed; exiting.');
-      return stop();
+      const reason = exitReasonFor({ browserGone });
+      info(`keepalive: ${reason}; exiting.`);
+      return stop(reason);
     }
     const onLogin = pages.some((p) => !p.isClosed() && LOGIN_URL_RE.test(p.url()));
     const signedIn = !!loadCachedAuth('outlook');

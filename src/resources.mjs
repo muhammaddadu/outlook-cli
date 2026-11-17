@@ -20,7 +20,6 @@
  * @property {string} host       request host that identifies this resource on the wire
  * @property {string} label      human name for audit output
  * @property {RegExp} [audiencePattern] matches `aud` values when the audience is per-tenant
- * @property {RegExp} [hostPattern]     matches request hosts when the host is per-tenant
  */
 
 /** @type {Record<string, Resource>} */
@@ -72,7 +71,6 @@ export const RESOURCES = Object.freeze({
     audiencePattern:
       /^(https:\/\/[a-z0-9-]+-my\.sharepoint\.com\/?|00000003-0000-0ff1-ce00-000000000000(\/[a-z0-9-]+-my\.sharepoint\.com)?(@.*)?)$/i,
     host: '',
-    hostPattern: /^[a-z0-9-]+-my\.sharepoint\.com$/i,
     label: 'OneDrive / SharePoint (meeting recordings, transcripts)',
   },
 });
@@ -119,9 +117,9 @@ export function classifyToken({ aud, host } = {}) {
   if (host) {
     for (const r of Object.values(RESOURCES)) {
       if (r.host && host === r.host) return r.key;
-      // Per-tenant hosts only by host when there is no audience: a team-site
-      // or other-app token sent to the OneDrive host must not be filed as one.
-      if (!aud && r.hostPattern?.test(host)) return r.key;
+      // No host fallback for per-tenant hosts (the OneDrive -my host): the
+      // only audience-less Bearers sent there are opaque, non-JWT tokens that
+      // can never be reused, so they are left unclassified.
     }
   }
   return null;
